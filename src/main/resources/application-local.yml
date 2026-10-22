@@ -1,0 +1,21 @@
+spring:
+  ai:
+    anthropic:
+      base-url: ${LLM_BASE_URL:http://localhost:6655/anthropic}
+      api-key: ${LLM_API_KEY:local-llm-proxy}
+      chat:
+        model: ${LLM_MODEL:claude-sonnet-latest}
+        max-tokens: 2048
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/knowledge_agent
+    username: knowledge
+    password: knowledge
+
+  jpa:
+    show-sql: true
+
+logging:
+  level:
+    org.hibernate.SQL: DEBUG
+    org.hibernate.orm.jdbc.bind: TRACE

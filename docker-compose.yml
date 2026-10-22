@@ -1,0 +1,19 @@
+services:
+
+  postgres:
+    image: postgres:17
+    container_name: knowledge-agent-postgres
+    environment:
+      POSTGRES_DB: knowledge_agent
+      POSTGRES_USER: knowledge
+      POSTGRES_PASSWORD: knowledge
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  wiremock:
+    image: wiremock/wiremock
+
+volumes:
+  postgres_data:

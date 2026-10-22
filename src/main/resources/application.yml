@@ -1,0 +1,43 @@
+spring:
+
+  application:
+    name: knowledge-agent
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/knowledge_agent}
+    username: ${SPRING_DATASOURCE_USERNAME:knowledge_agent}
+    password: ${SPRING_DATASOURCE_PASSWORD:knowledge_agent}
+
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  ai:
+    openai:
+      api-key: ${OPENAI_API_KEY:}
+      timeout: 30s
+      max-retries: 1
+      chat:
+        model: gpt-5-mini
+    retry:
+      max-attempts: 2
+
+agent:
+  limits:
+    max-iterations: 8
+    max-tool-calls: 15
+    max-context-tokens: 12000
+
+  execution:
+    timeout: 30s
+
+  memory:
+    max-messages: 20
+
+  approval:
+    enabled: true
