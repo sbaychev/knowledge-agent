@@ -1,9 +1,11 @@
 package com.stefan.knowledgeagent.order;
 
+import com.stefan.knowledgeagent.common.exception.AgentInputTooLongException;
 import com.stefan.knowledgeagent.payment.PaymentLookupTool;
 import com.stefan.knowledgeagent.payment.RefundLookupTool;
 import com.stefan.knowledgeagent.shipment.ShipmentLookupTool;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -46,6 +48,9 @@ public class OrderSupportAgentService {
             
             """;
 
+    @Value("${agent.limits.max-input-characters:4000}")
+    private int maxInputCharacters = 4000;
+
     private final ChatClient chatClient;
 
     private final OrderLookupTool orderLookupTool;
@@ -72,6 +77,10 @@ public class OrderSupportAgentService {
 
         if (!StringUtils.hasText(message)) {
             throw new IllegalArgumentException("Message must not be blank.");
+        }
+
+        if (message.length() > maxInputCharacters) {
+            throw new AgentInputTooLongException(maxInputCharacters);
         }
 
         String answer = chatClient.prompt()

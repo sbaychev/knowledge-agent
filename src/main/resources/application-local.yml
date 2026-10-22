@@ -6,6 +6,7 @@ spring:
         max-total-tool-calls: ${agent.limits.max-tool-calls:15}
         on-limit-exceeded: THROW
     anthropic:
+      max-retries: ${LLM_MAX_RETRIES:1}
       base-url: ${LLM_BASE_URL:http://localhost:6655/anthropic}
       api-key: ${LLM_API_KEY:local-llm-proxy}
       chat:
@@ -19,6 +20,13 @@ spring:
 
   jpa:
     show-sql: true
+
+agent:
+  limits:
+    max-input-characters: ${AGENT_MAX_INPUT_CHARACTERS:4000}
+    max-iterations: 8
+    max-tool-calls: 15
+    max-context-tokens: 12000
 
 logging:
   level:
