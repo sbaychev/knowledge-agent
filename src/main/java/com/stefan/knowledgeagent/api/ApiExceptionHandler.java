@@ -20,6 +20,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.LinkedHashMap;
@@ -183,6 +184,46 @@ public class ApiExceptionHandler {
         );
 
         return ResponseEntity.status(status).body(body);
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> handleResponseStatusException(
+            ResponseStatusException exception,
+            HttpServletRequest request
+    ) {
+
+        int status = exception.getStatusCode().value();
+
+        HttpStatus resolvedStatus = HttpStatus.resolve(status);
+
+        String error = resolvedStatus != null
+                ? resolvedStatus.getReasonPhrase()
+                : "HTTP Error";
+
+        String message = exception.getReason() != null
+                ? exception.getReason()
+                : error;
+
+        String code = switch (status) {
+            case 400 -> "BAD_REQUEST";
+            case 404 -> "RESOURCE_NOT_FOUND";
+            case 409 -> "CONFLICT";
+            default -> "HTTP_ERROR";
+        };
+
+        Map<String, Object> body = new LinkedHashMap<>();
+
+        body.put("timeStamp", Instant.now().toString());
+        body.put("status", status);
+        body.put("error", error);
+        body.put("code", code);
+        body.put("message", message);
+        body.put("path", request.getRequestURI());
+        body.put("fieldErrors", Map.of());
+
+        return ResponseEntity
+                .status(exception.getStatusCode())
+                .body(body);
     }
 
 }

@@ -1,8 +1,8 @@
 # Knowledge Agent
 
-A Java 25 / Spring Boot service for order lifecycle management and AI-assisted order support. The project combines a conventional domain-driven REST API with a read-only LLM agent that can look up order information through an application-owned tool.
+A Java 25 / Spring Boot service for order lifecycle management and AI-assisted order support. The project combines a conventional domain-driven REST API with a read-only LLM agent that retrieves transactional information through application-owned tools.
 
-> **Project status:** active development. The order, shipment, payment, refund, and first order-support agent slices are implemented. The next steps are to extend the agent with additional read-only tools, strengthen automated tests, and add evaluation and observability.
+> **Project status:** Active development. The order, shipment, payment, refund, and read-only order-support agent slices are implemented. The agent supports follow-up questions through conversation IDs and bounded in-memory chat history. Automated testing, evaluation, observability, and operational hardening are still being expanded.
 
 ## What it does
 
@@ -17,14 +17,21 @@ A Java 25 / Spring Boot service for order lifecycle management and AI-assisted o
 
 ### AI order-support agent
 
-- Exposes a chat endpoint at `POST /api/v1/agent/chat`.
-- Uses Spring AI `ChatClient` with provider-neutral application settings (`LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL`).
-- Keeps provider-specific Spring AI property mapping in a separate profile adapter. The current local setup uses the Anthropic-compatible API exposed by an LLM proxy.
-- Uses an application-defined `lookup_order` tool to retrieve real order data from the existing persistence layer.
-- Returns a natural-language answer in JSON; the answer content can contain Markdown.
-- Is currently read-only: the model cannot create, cancel, ship, or refund orders.
+- Exposes `POST /api/v1/agent/chat` for agent conversations.
+- Uses Spring AI `ChatClient` with provider-neutral application settings: `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL`.
+- Keeps provider-specific Spring AI property mapping in a separate adapter profile. The current local setup uses an Anthropic-compatible API exposed by an LLM proxy.
+- Uses four application-owned, read-only tools:
+    - `lookup_order`: order status, customer ID, order total, and item details.
+    - `lookup_shipment_by_order`: shipment status, carrier, tracking number, and shipping/delivery timestamps.
+    - `lookup_payment_by_order`: payment status, amount, currency, amount refunded, and capture timestamp.
+    - `lookup_refunds_by_order`: recent refund records and lifecycle timestamps.
+- Supports follow-up questions through a `conversationId` and bounded Spring AI chat memory.
+- Generates a conversation ID when one is omitted from a chat request and returns it with the answer.
+- Exposes an endpoint to close a conversation. Requests to continue a closed conversation return HTTP `409 Conflict`.
+- Returns the generated answer and conversation ID in JSON. The answer may contain Markdown.
+- Is read-only: the model cannot create, cancel, ship, or refund orders.
 
-The model does **not** connect directly to PostgreSQL. Tool execution remains in the application, which calls the repository and returns a bounded result to the model.
+The model does not connect directly to PostgreSQL. Tool execution stays in the application, which queries the relevant repositories and returns bounded results to the model. Conversation metadata is persisted in PostgreSQL, while chat history is held in bounded in-memory memory and is not durable across application restarts.
 
 ## Technology stack
 
@@ -44,27 +51,42 @@ The model does **not** connect directly to PostgreSQL. Tool execution remains in
 ```mermaid
 flowchart TD
     Client[HTTP client / frontend] --> API[Spring MVC REST API]
+
     API --> Domain[Order, shipment, payment and refund services]
     Domain --> JPA[Spring Data JPA]
     JPA --> DB[(PostgreSQL)]
 
+    API --> ConversationAPI[Conversation lifecycle API]
+    ConversationAPI --> ConversationService[ConversationService]
+    ConversationService --> ConversationRepo[ConversationRepository]
+    ConversationRepo --> JPA
+
     API --> Agent[Order-support agent]
-    Agent --> ClientAI[Spring AI ChatClient]
-    ClientAI <--> Adapter[Selected Spring AI provider adapter]
+    Agent --> ChatClient[Spring AI ChatClient]
+    ChatClient <--> Adapter[Selected Spring AI provider adapter]
     Adapter <--> LLM[Configured LLM endpoint]
-    ClientAI --> Tool[lookup_order tool]
-    Tool --> Repo[Order repository]
-    Repo --> DB
+    ChatClient --> Memory[Bounded in-memory chat history]
+    ChatClient --> Tools[Read-only tool set]
+
+    Tools --> OrderTool[lookup_order]
+    Tools --> ShipmentTool[lookup_shipment_by_order]
+    Tools --> PaymentTool[lookup_payment_by_order]
+    Tools --> RefundTool[lookup_refunds_by_order]
+
+    OrderTool --> DB
+    ShipmentTool --> DB
+    PaymentTool --> DB
+    RefundTool --> DB
 ```
 
-The AI model selects whether to call the registered tool. The application executes the tool and supplies its result to the model; the model has no direct database credentials or database connection.
+The model selects whether to call the registered tools. The application executes each tool and supplies its result to the model; the model has no direct database credentials or database connection. Conversation metadata is persisted in PostgreSQL. Chat messages currently remain in bounded in-memory history and are lost when the application process restarts.
 
 ## Prerequisites
 
 - JDK 25
 - Docker Engine / Docker Desktop with Docker Compose
 - The repository's Maven Wrapper (`./mvnw`)
-- A local llm proxy running on port `6655`, configured with an available model and compatible tool calling
+- A local LLM proxy running on port `6655`, configured with an available model and compatible tool calling
 - IntelliJ IDEA or another Java IDE (optional)
 
 ## Run locally
@@ -95,14 +117,14 @@ The configuration is split into three layers:
 
 For the current local LLM proxy, activate both the `local` and `anthropic` profiles. In IntelliJ, open **Run → Edit Configurations → Environment variables** and set:
 
-```text
+```dotenv
 SPRING_PROFILES_ACTIVE=local,anthropic
 LLM_BASE_URL=http://localhost:6655/anthropic
 LLM_API_KEY=local-LLM-proxy
 LLM_MODEL=<model alias supported by your proxy>
 ```
 
-`local-LLM-proxy` is only a placeholder for a local proxy that accepts a dummy bearer token. Use the credential required by your proxy if authentication is enabled. `LLM_MODEL` must be set to a model alias actually supported by the running proxy; don't assume a public provider's model ID is available.
+`local-LLM-proxy` is only a placeholder for a local proxy that accepts a dummy bearer token. Use the credential required by your proxy if authentication is enabled. `LLM_MODEL` must be set to a model alias actually supported by the running proxy; do not assume a public provider's model ID is available.
 
 The neutral local settings are equivalent to:
 
@@ -148,7 +170,7 @@ To build and run tests:
 ./mvnw clean verify
 ```
 
-Integration tests that use Testcontainers require Docker to be available. If the build fails, resolve the current compiler/test error before pushing; the project is under active development and this README does not claim the whole test suite is currently green.
+Integration tests that use Testcontainers require Docker to be available. If the build fails, resolve the current compiler/test error before pushing; the project is under active development and this README does not claim that the whole test suite is currently green.
 
 ## API overview
 
@@ -170,26 +192,53 @@ All endpoints use the `/api/v1` prefix.
 | `GET` | `/orders/{orderId}/payment` | Retrieve an order's payment |
 | `POST` | `/payments/{paymentId}/refunds` | Request a refund; requires `Idempotency-Key` |
 | `GET` | `/refunds/{refundId}` | Retrieve a refund |
-| `POST` | `/agent/chat` | Ask the order-support agent a question |
+| `POST` | `/agent/chat` | Send a message to the order-support agent |
+| `POST` | `/agent/conversations/{conversationId}/close` | Close a conversation and clear its in-memory chat history |
 
-### Example: ask the agent about an order
+### Example: start a conversation
 
-```bash
-curl -sS -X POST http://localhost:8080/api/v1/agent/chat \
-  -H 'Content-Type: application/json' \
-  -d '{"message":"What is the status of order 1? Include each product, quantity, unit price, and total."}'
-```
-
-The response has an `answer` field containing the model's reply. To display the Markdown in a terminal as readable plain text, pipe the output through `jq`:
+If `conversationId` is omitted, the service creates a conversation and returns its ID with the answer:
 
 ```bash
-curl -sS -X POST http://localhost:8080/api/v1/agent/chat \
+FIRST_RESPONSE=$(curl -sS \
+  -X POST http://localhost:8080/api/v1/agent/chat \
   -H 'Content-Type: application/json' \
-  -d '{"message":"What is the status of order 1?"}' \
-  | jq -r '.answer'
+  -d '{"message":"What is the current status of order 1?"}')
+
+printf '%s\n' "$FIRST_RESPONSE" | jq -r '.answer' | glow -
+
+CONVERSATION_ID=$(printf '%s\n' "$FIRST_RESPONSE" | jq -r '.conversationId')
+printf 'Conversation ID: %s\n' "$CONVERSATION_ID"
 ```
 
-If [Glow](https://github.com/charmbracelet/glow) is installed, use `| jq -r '.answer' | glow -` to render Markdown in the terminal.
+The response JSON contains `conversationId` and `answer`. The answer content can contain Markdown. If `glow` is not installed, use `jq -r '.answer'` without piping it to `glow`.
+
+### Example: continue the conversation
+
+Pass the returned `conversationId` in subsequent requests. The conversation history helps resolve follow-up references such as “its tracking number,” while the agent still uses the relevant tool for current transactional facts.
+
+```bash
+SECOND_RESPONSE=$(curl -sS \
+  -X POST http://localhost:8080/api/v1/agent/chat \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n \
+    --arg conversationId "$CONVERSATION_ID" \
+    --arg message "What is its tracking number?" \
+    '{conversationId: $conversationId, message: $message}')")
+
+printf '%s\n' "$SECOND_RESPONSE" | jq -r '.answer' | glow -
+```
+
+### Example: close the conversation
+
+```bash
+curl -i -X POST \
+  "http://localhost:8080/api/v1/agent/conversations/$CONVERSATION_ID/close"
+```
+
+A successful close returns `204 No Content`. A later chat request using that closed conversation ID returns `409 Conflict`. An unknown conversation ID returns `404 Not Found`.
+
+**Memory limitation:** conversation metadata is stored in PostgreSQL, but chat messages currently live in bounded in-memory history. The history is cleared when the conversation is closed and is not durable across application restarts.
 
 ### Example: create an order
 
@@ -249,19 +298,17 @@ ORDER BY o.id;
 - Give the model explicit tools instead of direct access to the database.
 - Prefer read-only tools first; require explicit validation and authorization before adding agent-driven mutations.
 - Keep provider-neutral endpoint/model/credential settings externalized; isolate protocol-specific mappings in provider adapter profiles.
-- Add tests for failure paths, concurrency and idempotency, not just successful HTTP requests.
-- Don't commit secrets, generated build output, local database files, or machine-specific IDE configuration.
+- Add tests for failure paths, concurrency, and idempotency, not just successful HTTP requests.
+- Do not commit secrets, generated build output, local database files, or machine-specific IDE configuration.
 
 ## Roadmap
 
-- [ ] Add read-only shipment lookup to the agent.
-- [ ] Add read-only payment and refund lookup tools.
-- [ ] Add mocked-model tests for tool selection and tool-result handling, so routine tests do not make paid model calls.
-- [ ] Improve error mapping for upstream LLM failures, including `401`, `404`, rate limits, timeouts, and unavailable proxy cases.
-- [ ] Add bounded tool-call / execution limits and timeout handling.
-- [ ] Add conversation memory with explicit size limits.
-- [ ] Add evaluation cases for factuality, correct tool selection, and refusal to invent missing order data.
-- [ ] Add observability for agent requests and tool execution without logging secrets or sensitive prompts.
+- [ ] Add mocked-model tests for tool selection, tool results, and multi-tool questions so routine tests do not make paid model calls.
+- [ ] Improve error mapping and resilience for upstream LLM failures, including authentication errors, rate limits, timeouts, and unavailable providers.
+- [ ] Add bounded tool-call and overall agent execution limits.
+- [ ] Add evaluation cases for factuality, correct tool selection, and handling of missing transactional records.
+- [ ] Add observability for agent latency, tool execution, and failures without logging secrets or sensitive prompts.
+- [ ] Introduce durable conversation history if persistence across application restarts becomes a requirement.
 - [ ] Document local development and CI test profiles separately.
 
 ## Security notes

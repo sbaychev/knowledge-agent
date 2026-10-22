@@ -1,4 +1,10 @@
 package com.stefan.knowledgeagent.api.dto;
 
-public record AgentChatResponse(String answer) {
+import java.util.UUID;
+
+public record AgentChatResponse(
+
+        UUID conversationId,
+        String answer
+) {
 }

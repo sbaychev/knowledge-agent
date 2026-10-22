@@ -34,7 +34,6 @@ spring:
 
 agent:
   limits:
-    max-input-characters: ${AGENT_MAX_INPUT_CHARACTERS:4000}
     max-iterations: 8
     max-tool-calls: 15
     max-context-tokens: 12000
@@ -43,7 +42,7 @@ agent:
     timeout: 30s
 
   memory:
-    max-messages: 20
+    max-messages: ${AGENT_MEMORY_MAX_MESSAGES:20}
 
   approval:
     enabled: true
