@@ -39,3 +39,24 @@ CREATE TABLE payments (
 
 CREATE INDEX idx_payments_status
     ON payments(status);
+
+INSERT INTO payments (
+    order_id,
+    amount,
+    amount_refunded,
+    currency,
+    provider_reference,
+    status,
+    captured_at,
+    created_at
+)
+VALUES (
+    1,
+    720.00,
+    0.00,
+    'EUR',
+    'DEMO-PAYMENT-ORDER-1',
+    'CAPTURED',
+    TIMESTAMPTZ '2026-10-20 09:45:00+00',
+    TIMESTAMPTZ '2026-10-20 09:45:00+00'
+);

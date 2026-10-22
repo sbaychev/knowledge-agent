@@ -18,6 +18,11 @@ spring:
     locations: classpath:db/migration
 
   ai:
+    tools:
+      limits:
+        max-calls-per-tool-default: ${AGENT_MAX_CALLS_PER_TOOL:8}
+        max-total-tool-calls: ${agent.limits.max-tool-calls:15}
+        on-limit-exceeded: THROW
     openai:
       api-key: ${OPENAI_API_KEY:}
       timeout: 30s

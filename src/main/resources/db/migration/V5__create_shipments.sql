@@ -18,3 +18,22 @@ CREATE TABLE shipments (
 
 CREATE INDEX idx_shipments_tracking_number
     ON shipments(tracking_number);
+
+INSERT INTO shipments (
+    order_id,
+    carrier,
+    tracking_number,
+    status,
+    shipped_at,
+    delivered_at,
+    created_at
+)
+VALUES (
+    1,
+    'DHL',
+    'DHL-DEMO-ORDER-1',
+    'IN_TRANSIT',
+    TIMESTAMPTZ '2026-10-20 10:30:00+00',
+    NULL,
+    TIMESTAMPTZ '2026-10-20 10:30:00+00'
+);
