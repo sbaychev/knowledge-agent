@@ -1,16 +1,33 @@
-package com.stefan.knowledgeagent.order;
+package com.stefan.knowledgeagent.tools;
 
+import com.stefan.knowledgeagent.observability.AgentObservability;
+import com.stefan.knowledgeagent.order.Order;
+import com.stefan.knowledgeagent.order.OrderRepository;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
 public class OrderLookupTool {
 
     private final OrderRepository orderRepository;
+    private final AgentObservability observability;
+
+    @Autowired
+    public OrderLookupTool(
+            OrderRepository orderRepository,
+            AgentObservability observability
+    ) {
+
+        this.orderRepository = orderRepository;
+        this.observability = observability != null
+                ? observability
+                : AgentObservability.noop();
+    }
 
     public OrderLookupTool(OrderRepository orderRepository) {
-        this.orderRepository = orderRepository;
+        this(orderRepository, AgentObservability.noop());
     }
 
     @Tool(
@@ -24,6 +41,15 @@ public class OrderLookupTool {
     )
     public String lookupOrder(@ToolParam(description = "The internal numeric ID of the order") long orderId) {
 
+        return observability.recordToolCall(
+                "lookup_order",
+                () -> lookupOrderInternal(orderId)
+        );
+
+    }
+
+    private String lookupOrderInternal(long orderId) {
+
         if (orderId <= 0) {
             return "INVALID_ORDER_ID: The order ID must be positive.";
 
@@ -32,7 +58,6 @@ public class OrderLookupTool {
         return orderRepository.findDetailedById(orderId)
                 .map(this::describeOrder)
                 .orElse("ORDER_NOT_FOUND: No order exists with ID " + orderId + ".");
-
     }
 
     private String describeOrder(Order order) {

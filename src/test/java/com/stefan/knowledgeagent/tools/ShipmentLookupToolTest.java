@@ -1,7 +1,10 @@
-package com.stefan.knowledgeagent.shipment;
+package com.stefan.knowledgeagent.tools;
 
 import com.stefan.knowledgeagent.common.exception.ResourceNotFoundException;
 import com.stefan.knowledgeagent.order.OrderRepository;
+import com.stefan.knowledgeagent.shipment.Shipment;
+import com.stefan.knowledgeagent.shipment.ShipmentService;
+import com.stefan.knowledgeagent.shipment.ShipmentStatus;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;

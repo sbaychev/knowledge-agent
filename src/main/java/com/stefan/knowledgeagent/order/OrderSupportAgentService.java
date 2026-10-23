@@ -1,11 +1,14 @@
 package com.stefan.knowledgeagent.order;
 
-import com.stefan.knowledgeagent.payment.PaymentLookupTool;
-import com.stefan.knowledgeagent.payment.RefundLookupTool;
-import com.stefan.knowledgeagent.shipment.ShipmentLookupTool;
+import com.stefan.knowledgeagent.observability.AgentObservability;
+import com.stefan.knowledgeagent.tools.OrderLookupTool;
+import com.stefan.knowledgeagent.tools.PaymentLookupTool;
+import com.stefan.knowledgeagent.tools.RefundLookupTool;
+import com.stefan.knowledgeagent.tools.ShipmentLookupTool;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -69,10 +72,13 @@ public class OrderSupportAgentService {
     private final ShipmentLookupTool shipmentLookupTool;
     private final PaymentLookupTool paymentLookupTool;
     private final RefundLookupTool refundLookupTool;
+    private final AgentObservability observability;
 
+    @Autowired
     public OrderSupportAgentService(
             ChatClient.Builder chatClientBuilder,
             @Qualifier("agentChatMemory") ChatMemory chatMemory,
+            AgentObservability observability,
             OrderLookupTool orderLookupTool,
             ShipmentLookupTool shipmentLookupTool,
             PaymentLookupTool paymentLookupTool,
@@ -85,51 +91,74 @@ public class OrderSupportAgentService {
                 )
                 .build();
 
+        this.observability = observability;
         this.orderLookupTool = orderLookupTool;
         this.shipmentLookupTool = shipmentLookupTool;
         this.paymentLookupTool = paymentLookupTool;
         this.refundLookupTool = refundLookupTool;
     }
 
+    /**
+     * Preserves direct construction in existing unit tests.
+     */
+    public OrderSupportAgentService(
+            ChatClient.Builder chatClientBuilder,
+            @Qualifier("agentChatMemory") ChatMemory chatMemory,
+            OrderLookupTool orderLookupTool,
+            ShipmentLookupTool shipmentLookupTool,
+            PaymentLookupTool paymentLookupTool,
+            RefundLookupTool refundLookupTool
+    ) {
+
+        this(
+                chatClientBuilder,
+                chatMemory,
+                AgentObservability.noop(),
+                orderLookupTool,
+                shipmentLookupTool,
+                paymentLookupTool,
+                refundLookupTool
+        );
+    }
+
     public String answer(String message, String conversationId) {
 
         if (!StringUtils.hasText(message)) {
-
             throw new IllegalArgumentException("Message must not be blank.");
         }
 
         if (!StringUtils.hasText(conversationId)) {
-
             throw new IllegalArgumentException(
                     "Conversation ID must not be blank."
             );
         }
 
-        String answer = chatClient.prompt()
-                .system(SYSTEM_PROMPT)
-                .user(message)
-                .tools(
-                        orderLookupTool,
-                        shipmentLookupTool,
-                        paymentLookupTool,
-                        refundLookupTool
-                )
-                .advisors(advisorSpec -> advisorSpec.param(
-                        ChatMemory.CONVERSATION_ID,
-                        conversationId
-                ))
-                .call()
-                .content();
+        return observability.recordAgentRequest(() -> {
 
-        if (!StringUtils.hasText(answer)) {
+            String answer = chatClient.prompt()
+                    .system(SYSTEM_PROMPT)
+                    .user(message)
+                    .tools(
+                            orderLookupTool,
+                            shipmentLookupTool,
+                            paymentLookupTool,
+                            refundLookupTool
+                    )
+                    .advisors(advisorSpec -> advisorSpec.param(
+                            ChatMemory.CONVERSATION_ID,
+                            conversationId
+                    ))
+                    .call()
+                    .content();
 
-            throw new IllegalStateException(
-                    "The AI provider returned an empty answer."
-            );
-        }
+            if (!StringUtils.hasText(answer)) {
 
-        return answer;
+                throw new IllegalStateException(
+                        "The AI provider returned an empty answer."
+                );
+            }
 
+            return answer;
+        });
     }
-
 }

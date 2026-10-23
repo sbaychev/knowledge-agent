@@ -1,8 +1,9 @@
 package com.stefan.knowledgeagent.order;
 
-import com.stefan.knowledgeagent.payment.PaymentLookupTool;
-import com.stefan.knowledgeagent.payment.RefundLookupTool;
-import com.stefan.knowledgeagent.shipment.ShipmentLookupTool;
+import com.stefan.knowledgeagent.tools.OrderLookupTool;
+import com.stefan.knowledgeagent.tools.PaymentLookupTool;
+import com.stefan.knowledgeagent.tools.RefundLookupTool;
+import com.stefan.knowledgeagent.tools.ShipmentLookupTool;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;

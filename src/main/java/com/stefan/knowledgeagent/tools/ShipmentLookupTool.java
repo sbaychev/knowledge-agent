@@ -1,9 +1,13 @@
-package com.stefan.knowledgeagent.shipment;
+package com.stefan.knowledgeagent.tools;
 
 import com.stefan.knowledgeagent.common.exception.ResourceNotFoundException;
+import com.stefan.knowledgeagent.observability.AgentObservability;
 import com.stefan.knowledgeagent.order.OrderRepository;
+import com.stefan.knowledgeagent.shipment.Shipment;
+import com.stefan.knowledgeagent.shipment.ShipmentService;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -11,10 +15,32 @@ public class ShipmentLookupTool {
 
     private final ShipmentService shipmentService;
     private final OrderRepository orderRepository;
+    private final AgentObservability observability;
 
-    public ShipmentLookupTool(ShipmentService shipmentService, OrderRepository orderRepository) {
+    @Autowired
+    public ShipmentLookupTool(
+            ShipmentService shipmentService,
+            OrderRepository orderRepository,
+            AgentObservability observability
+    ) {
+
         this.shipmentService = shipmentService;
         this.orderRepository = orderRepository;
+        this.observability = observability != null
+                ? observability
+                : AgentObservability.noop();
+    }
+
+    public ShipmentLookupTool(
+            ShipmentService shipmentService,
+            OrderRepository orderRepository
+    ) {
+
+        this(
+                shipmentService,
+                orderRepository,
+                AgentObservability.noop()
+        );
     }
 
     @Tool(
@@ -30,6 +56,14 @@ public class ShipmentLookupTool {
             long orderId
     ) {
 
+        return observability.recordToolCall(
+                "lookup_shipment_by_order",
+                () -> lookupShipmentByOrderInternal(orderId)
+        );
+
+    }
+
+    private String lookupShipmentByOrderInternal(long orderId) {
         if (orderId <= 0) {
             return "INVALID_ORDER_ID: The order ID must be positive.";
         }

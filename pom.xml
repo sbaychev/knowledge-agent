@@ -134,7 +134,16 @@
         </dependency>
 
         <!-- ===================================================== -->
-        <!-- Testing                                                  -->
+        <!-- Utilities                                             -->
+        <!-- ===================================================== -->
+
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- ===================================================== -->
+        <!-- Testing                                               -->
         <!-- ===================================================== -->
 
         <dependency>
@@ -172,8 +181,6 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
-
-
 
     </dependencies>
 

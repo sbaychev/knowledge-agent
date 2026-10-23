@@ -33,6 +33,7 @@ spring:
       max-attempts: 2
 
 agent:
+
   limits:
     max-iterations: 8
     max-tool-calls: 15
@@ -46,3 +47,16 @@ agent:
 
   approval:
     enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: never
+
+logging:
+  pattern:
+    level: "%5p [corr:%X{correlationId:-}]"

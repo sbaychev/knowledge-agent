@@ -1,10 +1,10 @@
 # Knowledge Agent
 
-A Java 25 / Spring Boot service for order lifecycle management and AI-assisted order support. The project combines a conventional domain-driven REST API with a read-only LLM agent that retrieves transactional information through application-owned tools.
+A Java 25 / Spring Boot service for order lifecycle management and AI-assisted order support. It combines a conventional REST API and PostgreSQL-backed domain model with a read-only LLM agent that retrieves transactional facts through application-owned tools.
 
-> **Project status:** Active development. The order, shipment, payment, refund, and read-only order-support agent slices are implemented. The agent supports follow-up questions through conversation IDs and bounded in-memory chat history. Automated testing, evaluation, observability, and operational hardening are still being expanded.
+> **Project status:** Active development. Order, shipment, payment, refund, and agent conversation flows are implemented. The agent has four read-only tools, bounded in-memory chat memory, explicit conversation lifecycle management, structured provider error handling, request correlation IDs, and Micrometer instrumentation. Automated testing and operational hardening are in progress; run the test suite before treating a branch as release-ready.
 
-## What it does
+## Features
 
 ### Order-management API
 
@@ -17,21 +17,35 @@ A Java 25 / Spring Boot service for order lifecycle management and AI-assisted o
 
 ### AI order-support agent
 
-- Exposes `POST /api/v1/agent/chat` for agent conversations.
-- Uses Spring AI `ChatClient` with provider-neutral application settings: `LLM_BASE_URL`, `LLM_API_KEY`, and `LLM_MODEL`.
-- Keeps provider-specific Spring AI property mapping in a separate adapter profile. The current local setup uses an Anthropic-compatible API exposed by an LLM proxy.
-- Uses four application-owned, read-only tools:
-    - `lookup_order`: order status, customer ID, order total, and item details.
-    - `lookup_shipment_by_order`: shipment status, carrier, tracking number, and shipping/delivery timestamps.
-    - `lookup_payment_by_order`: payment status, amount, currency, amount refunded, and capture timestamp.
-    - `lookup_refunds_by_order`: recent refund records and lifecycle timestamps.
-- Supports follow-up questions through a `conversationId` and bounded Spring AI chat memory.
-- Generates a conversation ID when one is omitted from a chat request and returns it with the answer.
-- Exposes an endpoint to close a conversation. Requests to continue a closed conversation return HTTP `409 Conflict`.
-- Returns the generated answer and conversation ID in JSON. The answer may contain Markdown.
+- `POST /api/v1/agent/chat` accepts a user message and optional `conversationId`.
+- Returns a JSON response containing `conversationId` and a Markdown-capable `answer`.
+- Uses Spring AI `ChatClient` with provider-neutral settings (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`) and a provider-specific adapter profile.
+- Supports follow-up questions by storing a bounded message window in Spring AI chat memory.
+- Uses the conversation history to resolve references such as "its tracking number", but calls the relevant tool for current transactional facts.
+- Persists conversation metadata and status in PostgreSQL; a conversation can be closed through a dedicated endpoint.
+- Rejects attempts to continue a closed conversation with HTTP `409 Conflict`.
 - Is read-only: the model cannot create, cancel, ship, or refund orders.
 
-The model does not connect directly to PostgreSQL. Tool execution stays in the application, which queries the relevant repositories and returns bounded results to the model. Conversation metadata is persisted in PostgreSQL, while chat history is held in bounded in-memory memory and is not durable across application restarts.
+The four application-owned tools are:
+
+| Tool | Information returned |
+|---|---|
+| `lookup_order` | Order status, customer ID, total, currency, and item details |
+| `lookup_shipment_by_order` | Shipment status, carrier, tracking number, and shipping/delivery timestamps |
+| `lookup_payment_by_order` | Payment status, amount, currency, refunded amount, and capture timestamp |
+| `lookup_refunds_by_order` | Recent refund records and lifecycle timestamps |
+
+The model has no database credentials and does not connect directly to PostgreSQL. Tool calls are executed by the application and return bounded results to the model.
+
+### Observability and error handling
+
+- `X-Correlation-ID` is accepted when valid, generated when absent or invalid, and returned in the HTTP response header.
+- The correlation ID is added to logging MDC and removed after the request to avoid leaking context across reused servlet threads.
+- Micrometer instrumentation records agent request counts/durations and tool-call counts/durations, labelled by bounded outcome/tool values.
+- AI provider failures are mapped to structured API errors rather than returning raw upstream exception messages.
+- Actuator health and metrics endpoints are configured in the application. If the Prometheus registry dependency is enabled, the Prometheus scrape endpoint is available too.
+
+**Current memory limitation:** conversation metadata is durable in PostgreSQL, but the actual chat messages are held in bounded in-memory history. Messages are cleared when a conversation closes and are lost when the application process restarts. Durable chat history is future work.
 
 ## Technology stack
 
@@ -41,10 +55,11 @@ The model does not connect directly to PostgreSQL. Tool execution stays in the a
 - Spring MVC and Jakarta Bean Validation
 - Spring Data JPA / Hibernate
 - PostgreSQL 17
-- Flyway database migrations and seed data
+- Flyway migrations and seed data
 - Docker Compose for local PostgreSQL
-- JUnit 5 and Testcontainers for integration tests
-- An LLM endpoint compatible with the selected Spring AI provider adapter; the current local setup uses an LLM proxy on port `6655`
+- Spring Boot Actuator and Micrometer
+- JUnit 5, Mockito, AssertJ, and Testcontainers
+- An LLM endpoint compatible with the selected Spring AI provider adapter; the current local setup uses an Anthropic-compatible proxy on port `6655`
 
 ## Architecture
 
@@ -59,14 +74,14 @@ flowchart TD
     API --> ConversationAPI[Conversation lifecycle API]
     ConversationAPI --> ConversationService[ConversationService]
     ConversationService --> ConversationRepo[ConversationRepository]
-    ConversationRepo --> JPA
+    ConversationRepo --> DB
 
     API --> Agent[Order-support agent]
     Agent --> ChatClient[Spring AI ChatClient]
-    ChatClient <--> Adapter[Selected Spring AI provider adapter]
+    ChatClient <--> Adapter[Provider-specific Spring AI adapter]
     Adapter <--> LLM[Configured LLM endpoint]
     ChatClient --> Memory[Bounded in-memory chat history]
-    ChatClient --> Tools[Read-only tool set]
+    ChatClient --> Tools[Read-only tools]
 
     Tools --> OrderTool[lookup_order]
     Tools --> ShipmentTool[lookup_shipment_by_order]
@@ -79,7 +94,7 @@ flowchart TD
     RefundTool --> DB
 ```
 
-The model selects whether to call the registered tools. The application executes each tool and supplies its result to the model; the model has no direct database credentials or database connection. Conversation metadata is persisted in PostgreSQL. Chat messages currently remain in bounded in-memory history and are lost when the application process restarts.
+The model chooses whether tools are needed. The application executes each selected tool and returns its result to the model. A conversation ID carries context across requests; it does not replace a fresh tool lookup for current transactional data.
 
 ## Prerequisites
 
@@ -87,6 +102,8 @@ The model selects whether to call the registered tools. The application executes
 - Docker Engine / Docker Desktop with Docker Compose
 - The repository's Maven Wrapper (`./mvnw`)
 - A local LLM proxy running on port `6655`, configured with an available model and compatible tool calling
+- `curl` and `jq` for the API examples
+- [`glow`](https://github.com/charmbracelet/glow) to render Markdown responses in the terminal
 - IntelliJ IDEA or another Java IDE (optional)
 
 ## Run locally
@@ -97,39 +114,35 @@ From the repository root:
 
 ```bash
 docker compose up -d
+docker compose ps | glow -
 ```
 
-The Compose configuration and Spring datasource settings must agree on the host port, database name, username, and password. The development configuration used in this project connects to PostgreSQL at `localhost:5432` and uses the `knowledge_agent` database. Keep local credentials out of committed files if you change them.
-
-To check the container:
-
-```bash
-docker compose ps
-```
+The Compose configuration and Spring datasource settings must agree on the host port, database name, username, and password. The development configuration connects to PostgreSQL at `localhost:5432` and uses the `knowledge_agent` database. Keep local credentials out of committed files if you change them.
 
 ### 2. Configure the local profile and LLM endpoint
 
 The configuration is split into three layers:
 
-- `src/main/resources/application.yml` contains shared application, datasource, JPA, Flyway, server, and agent settings. It uses provider-neutral `LLM_*` environment variables and does not hard-code an OpenAI or Anthropic property namespace.
-- `src/main/resources/application-local.yml` contains local datasource defaults and local LLM endpoint defaults. It uses the same generic `LLM_*` variables irrespective of provider.
-- `src/main/resources/application-anthropic.yml` is the provider adapter for the current LLM proxy setup. It maps the generic `knowledge-agent.llm.*` settings into Spring AI's Anthropic-specific properties.
+- `src/main/resources/application.yml` contains shared application, datasource, JPA, Flyway, server, Actuator, logging, and agent settings.
+- `src/main/resources/application-local.yml` contains local datasource and LLM endpoint defaults using provider-neutral `LLM_*` variables.
+- `src/main/resources/application-anthropic.yml` maps `knowledge-agent.llm.*` into Spring AI Anthropic-specific properties.
 
-For the current local LLM proxy, activate both the `local` and `anthropic` profiles. In IntelliJ, open **Run → Edit Configurations → Environment variables** and set:
+For the local LLM proxy, activate both the `local` and `anthropic` profiles. In IntelliJ, open **Run → Edit Configurations → Environment variables** and set:
 
 ```dotenv
 SPRING_PROFILES_ACTIVE=local,anthropic
 LLM_BASE_URL=http://localhost:6655/anthropic
 LLM_API_KEY=local-LLM-proxy
 LLM_MODEL=<model alias supported by your proxy>
+LLM_TIMEOUT=30s
+LLM_MAX_TOKENS=2048
 ```
 
-`local-LLM-proxy` is only a placeholder for a local proxy that accepts a dummy bearer token. Use the credential required by your proxy if authentication is enabled. `LLM_MODEL` must be set to a model alias actually supported by the running proxy; do not assume a public provider's model ID is available.
+`local-LLM-proxy` is only a placeholder for a local proxy that accepts a dummy bearer token. Use the credential required by your proxy if authentication is enabled. `LLM_MODEL` must match an alias actually supported by the running proxy; do not assume that a public provider model ID is available.
 
 The neutral local settings are equivalent to:
 
 ```yaml
-# application-local.yml
 knowledge-agent:
   llm:
     base-url: ${LLM_BASE_URL:http://localhost:6655/anthropic}
@@ -139,24 +152,9 @@ knowledge-agent:
     max-tokens: ${LLM_MAX_TOKENS:2048}
 ```
 
-The provider adapter contains the protocol-specific mapping:
+The provider adapter maps these settings to the selected protocol's Spring AI properties. To use another provider, add the corresponding Spring AI starter and adapter profile; changing only the URL is not sufficient when the upstream protocol differs. The endpoint must support the capabilities used by the agent, particularly tool calling.
 
-```yaml
-# application-anthropic.yml
-spring:
-  ai:
-    anthropic:
-      base-url: ${knowledge-agent.llm.base-url}
-      api-key: ${knowledge-agent.llm.api-key}
-      timeout: ${knowledge-agent.llm.timeout:30s}
-      chat:
-        model: ${knowledge-agent.llm.model}
-        max-tokens: ${knowledge-agent.llm.max-tokens:2048}
-```
-
-To use another protocol/provider, keep the domain, agent service, and `knowledge-agent.llm.*` contract unchanged; add the corresponding Spring AI starter and a provider adapter profile that maps those neutral properties into that provider's Spring AI properties. Then activate that adapter profile instead of `anthropic`. The endpoint must support the capabilities used by the agent, especially tool calling. Changing only the URL is not sufficient when the upstream API protocol differs (for example, Anthropic Messages versus OpenAI Chat Completions).
-
-Do not commit actual credentials or secrets. `application-local.yml` should contain only environment-variable references and harmless local defaults. If your local files already differ, merge the settings instead of replacing unrelated configuration.
+Do not commit actual credentials or secrets. `application-local.yml` should contain only environment-variable references and harmless local defaults. If your local files differ from these examples, merge the settings instead of replacing unrelated configuration.
 
 ### 3. Start the service
 
@@ -164,13 +162,22 @@ Do not commit actual credentials or secrets. `application-local.yml` should cont
 ./mvnw spring-boot:run
 ```
 
-To build and run tests:
+Check application health and render the JSON response clearly:
 
 ```bash
-./mvnw clean verify
+curl -sS http://localhost:8080/actuator/health \
+  | jq '.' \
+  | glow -
 ```
 
-Integration tests that use Testcontainers require Docker to be available. If the build fails, resolve the current compiler/test error before pushing; the project is under active development and this README does not claim that the whole test suite is currently green.
+Build and run the tests:
+
+```bash
+set -o pipefail
+./mvnw clean verify 2>&1 | glow -
+```
+
+Integration tests that use Testcontainers require Docker to be available. Resolve compiler errors, failing tests, or context-startup failures before pushing; a successful compilation alone does not prove that integration tests are green.
 
 ## API overview
 
@@ -192,58 +199,139 @@ All endpoints use the `/api/v1` prefix.
 | `GET` | `/orders/{orderId}/payment` | Retrieve an order's payment |
 | `POST` | `/payments/{paymentId}/refunds` | Request a refund; requires `Idempotency-Key` |
 | `GET` | `/refunds/{refundId}` | Retrieve a refund |
-| `POST` | `/agent/chat` | Send a message to the order-support agent |
+| `POST` | `/agent/chat` | Send a message and receive an answer plus `conversationId` |
 | `POST` | `/agent/conversations/{conversationId}/close` | Close a conversation and clear its in-memory chat history |
+| `GET` | `/actuator/health` | Application health |
+| `GET` | `/actuator/metrics` | List available Micrometer metrics |
+| `GET` | `/actuator/metrics/{metricName}` | Inspect a specific metric |
 
-### Example: start a conversation
+### Terminal output conventions
 
-If `conversationId` is omitted, the service creates a conversation and returns its ID with the answer:
+Use `jq` to format JSON, and `glow` to render Markdown. For structured JSON API responses, use:
 
 ```bash
+curl -sS http://localhost:8080/api/v1/orders/1 \
+  | jq '.' \
+  | glow -
+```
+
+For the agent's Markdown answer, extract the string rather than printing the whole JSON envelope:
+
+```bash
+printf '%s\n' "$AGENT_RESPONSE" | jq -r '.answer' | glow -
+```
+
+This keeps `conversationId` and other envelope fields separate from the human-readable answer. If `glow` is not installed, the JSON can still be formatted with `jq '.'`; Markdown answers can be printed with `jq -r '.answer'`.
+
+### Example: ask for a complete order summary
+
+The seeded Order #1 is intended for local smoke testing. In the current seed data it contains a laptop and a USB-C docking station, has a total of EUR 720.00, and is in `SHIPPED` status. Its shipment is `IN_TRANSIT` with carrier `DHL` and tracking number `DHL-DEMO-ORDER-1`. The payment is `CAPTURED`; no refund records are seeded for this order. The model should retrieve each relevant fact via its tool rather than relying on the prompt or a hard-coded answer.
+
+```bash
+MESSAGE='Give me a complete status summary for order 1, including its items, shipment, payment and refund history.'
+
 FIRST_RESPONSE=$(curl -sS \
   -X POST http://localhost:8080/api/v1/agent/chat \
   -H 'Content-Type: application/json' \
-  -d '{"message":"What is the current status of order 1?"}')
+  -H 'X-Correlation-ID: order-summary-demo-001' \
+  -d "$(jq -n --arg message "$MESSAGE" '{message: $message}')")
 
-printf '%s\n' "$FIRST_RESPONSE" | jq -r '.answer' | glow -
+# Print the JSON metadata envelope in pretty format.
+printf '%s\n' "$FIRST_RESPONSE" \
+  | jq '{conversationId: .conversationId}' \
+  | glow -
+
+# Render the actual Markdown answer.
+printf '%s\n' "$FIRST_RESPONSE" \
+  | jq -r '.answer' \
+  | glow -
 
 CONVERSATION_ID=$(printf '%s\n' "$FIRST_RESPONSE" | jq -r '.conversationId')
 printf 'Conversation ID: %s\n' "$CONVERSATION_ID"
 ```
 
-The response JSON contains `conversationId` and `answer`. The answer content can contain Markdown. If `glow` is not installed, use `jq -r '.answer'` without piping it to `glow`.
+The response envelope has this shape (the answer below is illustrative; natural-language formatting can vary by model):
 
-### Example: continue the conversation
+```json
+{
+  "conversationId": "<generated-uuid>",
+  "answer": "Markdown answer returned by the agent"
+}
+```
 
-Pass the returned `conversationId` in subsequent requests. The conversation history helps resolve follow-up references such as “its tracking number,” while the agent still uses the relevant tool for current transactional facts.
+### Example: follow up using the conversation ID
+
+Ask for the tracking number without repeating the order ID. The agent should resolve "its" from the conversation history and call `lookup_shipment_by_order` for the current shipment facts.
 
 ```bash
 SECOND_RESPONSE=$(curl -sS \
   -X POST http://localhost:8080/api/v1/agent/chat \
   -H 'Content-Type: application/json' \
+  -H "X-Correlation-ID: order-followup-001" \
   -d "$(jq -n \
     --arg conversationId "$CONVERSATION_ID" \
-    --arg message "What is its tracking number?" \
+    --arg message 'What is its tracking number?' \
     '{conversationId: $conversationId, message: $message}')")
 
-printf '%s\n' "$SECOND_RESPONSE" | jq -r '.answer' | glow -
+printf '%s\n' "$SECOND_RESPONSE" \
+  | jq '{conversationId: .conversationId}' \
+  | glow -
+
+printf '%s\n' "$SECOND_RESPONSE" \
+  | jq -r '.answer' \
+  | glow -
 ```
 
-### Example: close the conversation
+### Example: close a conversation
 
 ```bash
-curl -i -X POST \
-  "http://localhost:8080/api/v1/agent/conversations/$CONVERSATION_ID/close"
+CLOSE_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' \
+  -X POST \
+  "http://localhost:8080/api/v1/agent/conversations/$CONVERSATION_ID/close")
+
+printf 'HTTP_STATUS=%s\n' "$CLOSE_STATUS"
 ```
 
-A successful close returns `204 No Content`. A later chat request using that closed conversation ID returns `409 Conflict`. An unknown conversation ID returns `404 Not Found`.
+A successful close returns `204 No Content`. A later chat request using that closed ID returns `409 Conflict`; an unknown conversation ID returns `404 Not Found`.
 
-**Memory limitation:** conversation metadata is stored in PostgreSQL, but chat messages currently live in bounded in-memory history. The history is cleared when the conversation is closed and is not durable across application restarts.
+To display the JSON error body from a rejected follow-up, keep the HTTP status separate from the JSON stream:
+
+```bash
+ERROR_FILE=$(mktemp)
+HTTP_STATUS=$(curl -sS -o "$ERROR_FILE" -w '%{http_code}' \
+  -X POST http://localhost:8080/api/v1/agent/chat \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n \
+    --arg conversationId "$CONVERSATION_ID" \
+    --arg message 'What is the order status?' \
+    '{conversationId: $conversationId, message: $message}')")
+
+printf 'HTTP_STATUS=%s\n' "$HTTP_STATUS"
+jq '.' "$ERROR_FILE" | glow -
+rm -f "$ERROR_FILE"
+```
+
+### Example: inspect agent metrics
+
+The custom metric names are `knowledge.agent.requests`, `knowledge.agent.request.duration`, `knowledge.agent.tool.calls`, and `knowledge.agent.tool.duration`. Metric data appears after relevant requests have been processed.
+
+```bash
+curl -sS 'http://localhost:8080/actuator/metrics/knowledge.agent.requests' \
+  | jq '.' \
+  | glow -
+
+curl -sS \
+  'http://localhost:8080/actuator/metrics/knowledge.agent.tool.calls?tag=tool:lookup_order' \
+  | jq '.' \
+  | glow -
+```
+
+Use `X-Correlation-ID` to tie a client request to the application logs. Valid IDs are echoed back; missing or invalid IDs are replaced with a generated UUID. Do not use order IDs, conversation IDs, user input, or other high-cardinality values as metric tags.
 
 ### Example: create an order
 
 ```bash
-curl -i -X POST http://localhost:8080/api/v1/orders \
+curl -sS -X POST http://localhost:8080/api/v1/orders \
   -H 'Content-Type: application/json' \
   -d '{
     "customerId": 1,
@@ -256,26 +344,18 @@ curl -i -X POST http://localhost:8080/api/v1/orders \
         "unitPrice": 49.50
       }
     ]
-  }'
+  }' \
+  | jq '.' \
+  | glow -
 ```
 
-Use a customer ID that exists in your local database. The endpoint expects a valid customer and a non-empty list of valid items.
+Use a customer ID that exists in your local database. The endpoint expects a valid customer and a non-empty list of valid items. The request JSON is formatted for readability; the response is parsed and pretty-printed before it reaches the terminal.
 
 ## Database migrations and seed data
 
-Flyway manages schema creation and local seed data. Migrations are under `src/main/resources/db/migration` and are executed on application startup.
+Flyway manages schema creation and local seed data. Migrations are under `src/main/resources/db/migration` and run on application startup. Conversation metadata is created by the conversation migration; the chat message history is not stored in that table.
 
-The local seed set includes orders in different lifecycle states. Order item rows are seeded with the orders so that totals reconcile with item quantity and unit price. The development database can be recreated when you intentionally want to discard local state:
-
-```bash
-docker compose down -v
-docker compose up -d
-./mvnw spring-boot:run
-```
-
-> **Warning:** `docker compose down -v` removes Compose-managed volumes and permanently deletes the local PostgreSQL data in those volumes. Do not use it against a database containing data you need. Once a migration has been applied in a shared or persistent environment, treat it as immutable and add a new migration for subsequent changes.
-
-A useful sanity check for item totals is:
+A useful check for order totals is:
 
 ```sql
 SELECT
@@ -292,31 +372,56 @@ GROUP BY o.id, o.status, o.total_amount, o.currency
 ORDER BY o.id;
 ```
 
+The local development database can be recreated if you intentionally want to discard its state:
+
+```bash
+docker compose down -v
+docker compose up -d
+./mvnw spring-boot:run
+```
+
+> **Warning:** `docker compose down -v` removes Compose-managed volumes and permanently deletes the local PostgreSQL data in those volumes. Do not use it against a database containing data you need. Treat an applied migration as immutable in shared/persistent environments and add a new migration for later changes.
+
+## Testing
+
+Run the complete suite with:
+
+```bash
+set -o pipefail
+./mvnw clean test 2>&1 | glow -
+```
+
+The test suite includes unit tests for domain services and tools, API error mapping, chat memory/conversation lifecycle, observability, request correlation, and scripted-model tool calling. Integration tests use Testcontainers and require a functioning Docker installation. Tests that exercise the LLM agent's tool loop should use a scripted/fake `ChatModel` so they do not need a running provider or paid API calls.
+
 ## Development principles
 
 - Keep business rules in domain/services, not in controllers or model prompts.
 - Give the model explicit tools instead of direct access to the database.
-- Prefer read-only tools first; require explicit validation and authorization before adding agent-driven mutations.
-- Keep provider-neutral endpoint/model/credential settings externalized; isolate protocol-specific mappings in provider adapter profiles.
-- Add tests for failure paths, concurrency, and idempotency, not just successful HTTP requests.
+- Use conversation history for reference resolution; use tools for current transactional facts.
+- Keep tool names and metric tags bounded; never tag metrics with order IDs, conversation IDs, or user-supplied values.
+- Prefer read-only tools; validate and authorize any future mutation tool in application code.
+- Keep provider-neutral settings externalized and protocol-specific mappings in adapter profiles.
+- Test failure paths, concurrency, idempotency, conversation closure, and tool execution—not just successful HTTP requests.
+- Never log API keys, full prompts, full model responses, tracking numbers, payment data, or other transactional details unnecessarily.
 - Do not commit secrets, generated build output, local database files, or machine-specific IDE configuration.
 
 ## Roadmap
 
-- [ ] Add mocked-model tests for tool selection, tool results, and multi-tool questions so routine tests do not make paid model calls.
-- [ ] Improve error mapping and resilience for upstream LLM failures, including authentication errors, rate limits, timeouts, and unavailable providers.
-- [ ] Add bounded tool-call and overall agent execution limits.
-- [ ] Add evaluation cases for factuality, correct tool selection, and handling of missing transactional records.
-- [ ] Add observability for agent latency, tool execution, and failures without logging secrets or sensitive prompts.
-- [ ] Introduce durable conversation history if persistence across application restarts becomes a requirement.
-- [ ] Document local development and CI test profiles separately.
+- [ ] Fix and verify the full test suite after observability instrumentation and tool package refactoring.
+- [ ] Add provider error/timeout integration tests and enforce an overall agent-request deadline across model/tool iterations.
+- [ ] Add automated evaluation cases for tool selection, factuality, missing records, multi-tool questions, and follow-up resolution.
+- [ ] Add durable conversation-message storage if history must survive application restarts.
+- [ ] Add tracing/exporter configuration if distributed traces are needed beyond request correlation IDs and Micrometer metrics.
+- [ ] Add RAG using PostgreSQL/pgvector and a versioned knowledge corpus.
+- [ ] Add MCP integration tests, CI build/test workflows, and final operational documentation.
 
 ## Security notes
 
-- Keep `application-local.yml` with actual credentials out of Git; the checked-in template should contain environment-variable placeholders and harmless local defaults only.
+- Keep local credentials out of Git. Commit only environment-variable references and harmless development defaults.
 - Review `git status` and `git diff --cached` before pushing to ensure no API keys, proxy tokens, service keys, personal data, or local configuration have been staged.
-- The example datasource credentials are for local development only; they must not be reused in a shared or deployed environment.
-- Treat model output as untrusted content. Validate any future tool arguments and enforce business authorization in application code.
+- The example datasource credentials are for local development only and must not be reused in a deployed environment.
+- Treat tool arguments and model output as untrusted. Enforce input validation, authorization, and business rules in application code.
+- The current chat memory is in-process and is not an authorization boundary. If the API is exposed to multiple users, bind each conversation to an authenticated principal and enforce ownership before allowing reuse or closure.
 
 ## License
 

@@ -1,5 +1,7 @@
 package com.stefan.knowledgeagent.api;
 
+import com.anthropic.errors.AnthropicException;
+import com.anthropic.errors.AnthropicServiceException;
 import com.stefan.knowledgeagent.api.dto.ApiErrorResponse;
 import com.stefan.knowledgeagent.common.exception.ResourceNotFoundException;
 import com.stefan.knowledgeagent.order.exception.InvalidOrderStateException;
@@ -12,6 +14,9 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.ai.model.tool.ToolCallLimitExceededException;
+import org.springframework.ai.retry.NonTransientAiException;
+import org.springframework.ai.retry.TransientAiException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -20,6 +25,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
@@ -224,6 +230,109 @@ public class ApiExceptionHandler {
         return ResponseEntity
                 .status(exception.getStatusCode())
                 .body(body);
+    }
+
+    @ExceptionHandler({
+            TransientAiException.class,
+            ResourceAccessException.class
+    })
+    public ResponseEntity<ApiErrorResponse> handleAiProviderUnavailable(
+            RuntimeException exception,
+            HttpServletRequest request
+    ) {
+
+        log.warn(
+                "AI provider unavailable for {} ({})",
+                request.getRequestURI(),
+                exception.getClass().getSimpleName()
+        );
+
+        return error(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "AI_PROVIDER_UNAVAILABLE",
+                "The AI provider is temporarily unavailable. Please try again.",
+                request,
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(NonTransientAiException.class)
+    public ResponseEntity<ApiErrorResponse> handleAiProviderRejected(
+            NonTransientAiException exception,
+            HttpServletRequest request
+    ) {
+
+        log.warn(
+                "AI provider rejected the request for {} ({})",
+                request.getRequestURI(),
+                exception.getClass().getSimpleName()
+        );
+
+        return error(
+                HttpStatus.BAD_GATEWAY,
+                "AI_PROVIDER_ERROR",
+                "The AI provider could not process the request. Check the provider configuration and model settings.",
+                request,
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(ToolCallLimitExceededException.class)
+    public ResponseEntity<ApiErrorResponse> handleToolCallLimitExceeded(
+            ToolCallLimitExceededException exception,
+            HttpServletRequest request
+    ) {
+
+        log.warn(
+                "Agent tool-call limit exceeded for {}",
+                request.getRequestURI()
+        );
+
+        return error(
+                HttpStatus.UNPROCESSABLE_CONTENT,
+                "AGENT_TOOL_LIMIT_EXCEEDED",
+                "The agent reached its tool-call limit. Try a more specific question.",
+                request,
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(AnthropicException.class)
+    public ResponseEntity<ApiErrorResponse> handleAnthropicException(
+            AnthropicException exception,
+            HttpServletRequest request
+    ) {
+
+        HttpStatus status = HttpStatus.SERVICE_UNAVAILABLE;
+
+        String code = "AI_PROVIDER_UNAVAILABLE";
+        String message =
+                "The AI provider is temporarily unavailable. Please try again.";
+
+        if (exception instanceof AnthropicServiceException serviceException) {
+
+            int upstreamStatus = serviceException.statusCode();
+
+            boolean retryable = upstreamStatus == 408
+                    || upstreamStatus == 425
+                    || upstreamStatus == 429
+                    || upstreamStatus >= 500;
+
+            if (!retryable) {
+                status = HttpStatus.BAD_GATEWAY;
+                code = "AI_PROVIDER_ERROR";
+                message =
+                        "The AI provider could not process the request. Check the provider configuration and model settings.";
+            }
+        }
+
+        log.warn(
+                "Anthropic provider failure for {} ({})",
+                request.getRequestURI(),
+                exception.getClass().getSimpleName()
+        );
+
+        return error(status, code, message, request, Map.of());
     }
 
 }

@@ -1,9 +1,13 @@
-package com.stefan.knowledgeagent.payment;
+package com.stefan.knowledgeagent.tools;
 
 import com.stefan.knowledgeagent.common.exception.ResourceNotFoundException;
+import com.stefan.knowledgeagent.observability.AgentObservability;
 import com.stefan.knowledgeagent.order.OrderRepository;
+import com.stefan.knowledgeagent.payment.Payment;
+import com.stefan.knowledgeagent.payment.PaymentService;
 import org.springframework.ai.tool.annotation.Tool;
 import org.springframework.ai.tool.annotation.ToolParam;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -11,11 +15,31 @@ public class PaymentLookupTool {
 
     private final PaymentService paymentService;
     private final OrderRepository orderRepository;
+    private final AgentObservability observability;
 
-    public PaymentLookupTool(PaymentService paymentService, OrderRepository orderRepository) {
+    @Autowired
+    public PaymentLookupTool(
+            PaymentService paymentService,
+            OrderRepository orderRepository,
+            AgentObservability observability
+    ) {
 
         this.paymentService = paymentService;
         this.orderRepository = orderRepository;
+        this.observability = observability != null
+                ? observability
+                : AgentObservability.noop();
+    }
+
+    public PaymentLookupTool(
+            PaymentService paymentService,
+            OrderRepository orderRepository
+    ) {
+        this(
+                paymentService,
+                orderRepository,
+                AgentObservability.noop()
+        );
     }
 
     @Tool(
@@ -30,6 +54,15 @@ public class PaymentLookupTool {
             @ToolParam(description = "The internal numeric ID of the order")
             long orderId
     ) {
+
+        return observability.recordToolCall(
+                "lookup_payment_by_order",
+                () -> lookupPaymentByOrderInternal(orderId)
+        );
+
+    }
+
+    private String lookupPaymentByOrderInternal(long orderId) {
 
         if (orderId <= 0) {
             return "INVALID_ORDER_ID: The order ID must be positive.";

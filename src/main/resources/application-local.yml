@@ -6,6 +6,7 @@ spring:
         max-total-tool-calls: ${agent.limits.max-tool-calls:15}
         on-limit-exceeded: THROW
     anthropic:
+      timeout: ${LLM_TIMEOUT:30s}
       max-retries: ${LLM_MAX_RETRIES:1}
       base-url: ${LLM_BASE_URL:http://localhost:6655/anthropic}
       api-key: ${LLM_API_KEY:local-llm-proxy}
@@ -32,4 +33,4 @@ agent:
 logging:
   level:
     org.hibernate.SQL: DEBUG
-    org.hibernate.orm.jdbc.bind: TRACE
+    org.hibernate.orm.jdbc.bind: OFF
