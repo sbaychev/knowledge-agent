@@ -2,7 +2,7 @@
 
 A Java 25 / Spring Boot service for order lifecycle management and AI-assisted order support. It combines a conventional REST API and PostgreSQL-backed domain model with a read-only LLM agent that retrieves transactional facts through application-owned tools.
 
-> **Project status:** Active development. Order, shipment, payment, refund, and agent conversation flows are implemented. The agent has four read-only tools, bounded in-memory chat memory, explicit conversation lifecycle management, structured provider error handling, request correlation IDs, and Micrometer instrumentation. Automated testing and operational hardening are in progress; run the test suite before treating a branch as release-ready.
+> **Project status:** Active development. Order, shipment, payment, refund, and agent conversation flows are implemented. The agent has four read-only tools, bounded PostgreSQL-backed chat memory, explicit conversation lifecycle management, structured provider error handling, request correlation IDs, and Micrometer instrumentation. Automated testing and operational hardening are in progress; run the test suite before treating a branch as release-ready.
 
 ## Features
 
@@ -20,7 +20,7 @@ A Java 25 / Spring Boot service for order lifecycle management and AI-assisted o
 - `POST /api/v1/agent/chat` accepts a user message and optional `conversationId`.
 - Returns a JSON response containing `conversationId` and a Markdown-capable `answer`.
 - Uses Spring AI `ChatClient` with provider-neutral settings (`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`) and a provider-specific adapter profile.
-- Supports follow-up questions by storing a bounded message window in Spring AI chat memory.
+- Supports follow-up questions with a bounded `MessageWindowChatMemory` backed by Spring AI `JdbcChatMemoryRepository` and PostgreSQL.
 - Uses the conversation history to resolve references such as "its tracking number", but calls the relevant tool for current transactional facts.
 - Persists conversation metadata and status in PostgreSQL; a conversation can be closed through a dedicated endpoint.
 - Rejects attempts to continue a closed conversation with HTTP `409 Conflict`.
@@ -45,7 +45,7 @@ The model has no database credentials and does not connect directly to PostgreSQ
 - AI provider failures are mapped to structured API errors rather than returning raw upstream exception messages.
 - Actuator health and metrics endpoints are configured in the application. If the Prometheus registry dependency is enabled, the Prometheus scrape endpoint is available too.
 
-**Current memory limitation:** conversation metadata is durable in PostgreSQL, but the actual chat messages are held in bounded in-memory history. Messages are cleared when a conversation closes and are lost when the application process restarts. Durable chat history is future work.
+**Memory persistence boundary:** bounded chat-memory messages are stored in PostgreSQL and survive application restarts. Closing a conversation clears its stored memory. Spring AI 2.0.1 `JdbcChatMemoryRepository` filters assistant messages containing tool calls and `ToolResponseMessage` records, so this is contextual memory, not a complete audit transcript of every model/tool exchange. If full tool-call replay or an immutable audit history is required, implement a separate conversation event/history store rather than relying on `ChatMemoryRepository`.
 
 ## Technology stack
 
@@ -58,6 +58,7 @@ The model has no database credentials and does not connect directly to PostgreSQ
 - Flyway migrations and seed data
 - Docker Compose for local PostgreSQL
 - Spring Boot Actuator and Micrometer
+- Spring AI JDBC chat-memory repository
 - JUnit 5, Mockito, AssertJ, and Testcontainers
 - An LLM endpoint compatible with the selected Spring AI provider adapter; the current local setup uses an Anthropic-compatible proxy on port `6655`
 
@@ -80,7 +81,8 @@ flowchart TD
     Agent --> ChatClient[Spring AI ChatClient]
     ChatClient <--> Adapter[Provider-specific Spring AI adapter]
     Adapter <--> LLM[Configured LLM endpoint]
-    ChatClient --> Memory[Bounded in-memory chat history]
+    ChatClient --> Memory[Bounded MessageWindowChatMemory]
+    Memory --> MemoryDB[(SPRING_AI_CHAT_MEMORY in PostgreSQL)]
     ChatClient --> Tools[Read-only tools]
 
     Tools --> OrderTool[lookup_order]
@@ -102,8 +104,8 @@ The model chooses whether tools are needed. The application executes each select
 - Docker Engine / Docker Desktop with Docker Compose
 - The repository's Maven Wrapper (`./mvnw`)
 - A local LLM proxy running on port `6655`, configured with an available model and compatible tool calling
-- `curl` and `jq` for the API examples
-- [`glow`](https://github.com/charmbracelet/glow) to render Markdown responses in the terminal
+- `curl` and `jq` for the API examples and the live evaluation script
+- [`glow`](https://github.com/charmbracelet/glow) to render Markdown responses and pretty-printed JSON in the terminal
 - IntelliJ IDEA or another Java IDE (optional)
 
 ## Run locally
@@ -200,7 +202,7 @@ All endpoints use the `/api/v1` prefix.
 | `POST` | `/payments/{paymentId}/refunds` | Request a refund; requires `Idempotency-Key` |
 | `GET` | `/refunds/{refundId}` | Retrieve a refund |
 | `POST` | `/agent/chat` | Send a message and receive an answer plus `conversationId` |
-| `POST` | `/agent/conversations/{conversationId}/close` | Close a conversation and clear its in-memory chat history |
+| `POST` | `/agent/conversations/{conversationId}/close` | Close a conversation and delete its stored chat memory |
 | `GET` | `/actuator/health` | Application health |
 | `GET` | `/actuator/metrics` | List available Micrometer metrics |
 | `GET` | `/actuator/metrics/{metricName}` | Inspect a specific metric |
@@ -353,7 +355,7 @@ Use a customer ID that exists in your local database. The endpoint expects a val
 
 ## Database migrations and seed data
 
-Flyway manages schema creation and local seed data. Migrations are under `src/main/resources/db/migration` and run on application startup. Conversation metadata is created by the conversation migration; the chat message history is not stored in that table.
+Flyway manages schema creation and local seed data. Migrations are under `src/main/resources/db/migration` and run on application startup. Conversation metadata is created by the conversation migration. Spring AI chat-memory messages are stored separately in `SPRING_AI_CHAT_MEMORY`, managed by a dedicated Flyway migration.
 
 A useful check for order totals is:
 
@@ -391,7 +393,28 @@ set -o pipefail
 ./mvnw clean test 2>&1 | glow -
 ```
 
-The test suite includes unit tests for domain services and tools, API error mapping, chat memory/conversation lifecycle, observability, request correlation, and scripted-model tool calling. Integration tests use Testcontainers and require a functioning Docker installation. Tests that exercise the LLM agent's tool loop should use a scripted/fake `ChatModel` so they do not need a running provider or paid API calls.
+The test suite includes unit tests for domain services and tools, API error mapping, chat memory/conversation lifecycle, PostgreSQL-backed chat-memory persistence, observability, request correlation, and scripted-model tool calling. Integration tests use Testcontainers and require a functioning Docker installation. Tests that exercise the LLM agent's tool loop should use a scripted/fake `ChatModel` so they do not need a running provider or paid API calls.
+
+## Live agent evaluation
+
+`scripts/evaluate-agent.sh` is a black-box smoke/evaluation suite for a locally running service and configured LLM provider. It checks the model-plus-tools workflow against the seeded Order #1 data, conversation follow-up resolution, payment lookup, empty refund history, and unknown-order handling. It validates required facts rather than exact prose because model wording can vary.
+
+Run it from the repository root after starting PostgreSQL and the Spring Boot application with the local LLM provider configured:
+
+```bash
+chmod +x scripts/evaluate-agent.sh
+set -o pipefail
+./scripts/evaluate-agent.sh 2>&1 | glow -
+```
+
+To use a different application URL or increase the request timeout:
+
+```bash
+BASE_URL=http://localhost:8080 REQUEST_TIMEOUT_SECONDS=120 \\
+  ./scripts/evaluate-agent.sh 2>&1 | glow -
+```
+
+The script makes real LLM requests and may consume provider capacity. It is a development/acceptance check, not a deterministic unit test. Keep the scripted `ChatModel` tests for deterministic tool-calling and CI validation. The script exits non-zero if an expected fact is missing or an API request fails. It prints each Markdown answer with `glow` and the final evaluation report as pretty JSON through `jq` and `glow`.
 
 ## Development principles
 
@@ -409,8 +432,8 @@ The test suite includes unit tests for domain services and tools, API error mapp
 
 - [ ] Fix and verify the full test suite after observability instrumentation and tool package refactoring.
 - [ ] Add provider error/timeout integration tests and enforce an overall agent-request deadline across model/tool iterations.
-- [ ] Add automated evaluation cases for tool selection, factuality, missing records, multi-tool questions, and follow-up resolution.
-- [ ] Add durable conversation-message storage if history must survive application restarts.
+- [ ] Expand the live evaluation scenarios and add provider-independent regression tests for tool selection, missing records, multi-tool questions, and follow-up resolution.
+- [ ] Add a separate full-fidelity conversation audit/history store if tool-call replay or compliance-grade conversation history becomes a requirement.
 - [ ] Add tracing/exporter configuration if distributed traces are needed beyond request correlation IDs and Micrometer metrics.
 - [ ] Add RAG using PostgreSQL/pgvector and a versioned knowledge corpus.
 - [ ] Add MCP integration tests, CI build/test workflows, and final operational documentation.
@@ -421,7 +444,7 @@ The test suite includes unit tests for domain services and tools, API error mapp
 - Review `git status` and `git diff --cached` before pushing to ensure no API keys, proxy tokens, service keys, personal data, or local configuration have been staged.
 - The example datasource credentials are for local development only and must not be reused in a deployed environment.
 - Treat tool arguments and model output as untrusted. Enforce input validation, authorization, and business rules in application code.
-- The current chat memory is in-process and is not an authorization boundary. If the API is exposed to multiple users, bind each conversation to an authenticated principal and enforce ownership before allowing reuse or closure.
+- Persisted chat memory is not an authorization boundary. If the API is exposed to multiple users, bind each conversation to an authenticated principal and enforce ownership before allowing reuse or closure. Also define a retention policy for stored chat-memory rows; do not keep conversation context indefinitely by default.
 
 ## License
 

@@ -1,6 +1,7 @@
 package com.stefan.knowledgeagent.config;
 
 import org.springframework.ai.chat.memory.ChatMemory;
+import org.springframework.ai.chat.memory.ChatMemoryRepository;
 import org.springframework.ai.chat.memory.MessageWindowChatMemory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -11,16 +12,19 @@ public class AgentMemoryConfiguration {
 
     @Bean("agentChatMemory")
     public ChatMemory agentChatMemory(
+            ChatMemoryRepository chatMemoryRepository,
             @Value("${agent.memory.max-messages:20}") int maxMessages
     ) {
 
         if (maxMessages < 2) {
+
             throw new IllegalArgumentException(
                     "agent.memory.max-messages must be at least 2"
             );
         }
 
         return MessageWindowChatMemory.builder()
+                .chatMemoryRepository(chatMemoryRepository)
                 .maxMessages(maxMessages)
                 .build();
     }

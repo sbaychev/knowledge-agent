@@ -1,5 +1,10 @@
 spring:
   ai:
+    chat:
+      memory:
+        repository:
+          jdbc:
+            initialize-schema: never
     tools:
       limits:
         max-calls-per-tool-default: ${AGENT_MAX_CALLS_PER_TOOL:8}
