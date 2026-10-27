@@ -88,6 +88,21 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local check_name="$1"
+  local answer="$2"
+  local pattern="$3"
+
+  if printf '%s\n' "$answer" | grep -Eiq "$pattern"; then
+    printf '%s\tFAIL\n' "$check_name" >> "$RESULTS_FILE"
+    FAILURES=$((FAILURES + 1))
+    printf 'FAIL  %s\n' "$check_name"
+  else
+    printf '%s\tPASS\n' "$check_name" >> "$RESULTS_FILE"
+    printf 'PASS  %s\n' "$check_name"
+  fi
+}
+
 printf 'Running live agent evaluation against %s\n\n' "$CHAT_ENDPOINT"
 printf 'The checks validate factual content from the local seed data; natural-language wording may vary.\n\n'
 
@@ -148,6 +163,32 @@ UNKNOWN_RESPONSE="$(post_chat \
 UNKNOWN_ANSWER="$(printf '%s\n' "$UNKNOWN_RESPONSE" | jq -er '.answer | strings')"
 show_answer 'Unknown-order handling' "$UNKNOWN_RESPONSE"
 assert_contains 'unknown order is explicitly reported' "$UNKNOWN_ANSWER" 'not found|does not exist|no order|unknown order'
+
+# Optional Case 6: enable only when the service is running with the `rag` profile.
+if [[ "${EVALUATE_RAG:-false}" == "true" ]]; then
+  RAG_RESPONSE="$(post_chat \
+    'What is the return window according to the documented policy?' \
+    '' \
+    "${CORRELATION_PREFIX}-rag-return-window")"
+  RAG_ANSWER="$(printf '%s\n' "$RAG_RESPONSE" | jq -er '.answer | strings')"
+  show_answer 'RAG policy retrieval' "$RAG_RESPONSE"
+  assert_contains 'RAG answer gives the documented 30-calendar-day window' "$RAG_ANSWER" '30[[:space:]]+calendar[[:space:]]+days'
+  assert_contains 'RAG answer identifies the Refund Policy source' "$RAG_ANSWER" 'Refund Policy'
+  assert_contains 'RAG answer identifies policy version 1.0' "$RAG_ANSWER" 'version[[:space:]]+1[.]0'
+  assert_not_contains 'RAG answer does not expose raw retrieval markers' "$RAG_ANSWER" 'SOURCE(_ID)?:|EXCERPT:'
+
+  # A relevant document may not contain every requested detail; the agent must not invent one.
+  ADDRESS_RESPONSE="$(post_chat \
+    'What return address does the Refund Policy specify?' \
+    '' \
+    "${CORRELATION_PREFIX}-rag-unsupported-detail")"
+  ADDRESS_ANSWER="$(printf '%s\n' "$ADDRESS_RESPONSE" | jq -er '.answer | strings')"
+  show_answer 'RAG question not answered by the corpus' "$ADDRESS_RESPONSE"
+  assert_contains 'RAG says the return address is not documented' "$ADDRESS_ANSWER" 'not specified|does not specify|does not state|not provided|not included|not documented|cannot find|could not find|no information'
+  assert_not_contains 'RAG missing-detail answer does not invent an address-like value' "$ADDRESS_ANSWER" '[0-9]+[[:space:]]+[[:alnum:]]+[[:space:]]+(street|st[.]?|road|rd[.]?|avenue|ave[.]?|boulevard|blvd[.]?)'
+else
+  printf 'Skipping RAG evaluation (set EVALUATE_RAG=true when the application is running with the rag profile).\n'
+fi
 
 printf '\n## Evaluation results\n\n' | glow -
 jq -Rn '

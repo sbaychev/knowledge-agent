@@ -29,11 +29,11 @@ spring:
 
 agent:
   memory:
-    max-messages: ${AGENT_MEMORY_MAX_MESSAGES:20}
-  limits:
-    max-iterations: 8
-    max-tool-calls: 15
-    max-context-tokens: 12000
+    max-context-tokens: ${AGENT_MAX_CONTEXT_TOKENS:12000}
+    max-iterations: ${AGENT_MAX_ITERATIONS:8}
+    max-tool-calls: ${AGENT_MAX_TOOL_CALLS:15}
+  execution:
+    timeout: ${AGENT_EXECUTION_TIMEOUT:30s}
 
 logging:
   level:

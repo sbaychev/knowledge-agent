@@ -60,20 +60,6 @@ class ChatMemoryPersistenceIntegrationTest {
             List<Message> restoredMessages =
                     reloadedMemory.get(conversationId);
 
-            System.out.println(
-                    "ChatMemoryRepository implementation: "
-                            + chatMemoryRepository.getClass().getName()
-            );
-
-            System.out.println(
-                    "Conversation ID: " + conversationId
-            );
-
-            System.out.println(
-                    "Messages from repository: "
-                            + chatMemoryRepository.findByConversationId(conversationId)
-            );
-
             assertThat(restoredMessages)
                     .hasSize(2);
 
@@ -87,6 +73,46 @@ class ChatMemoryPersistenceIntegrationTest {
 
         } finally {
             // Isolate this integration test from subsequent executions.
+            chatMemory.clear(conversationId);
+        }
+    }
+
+    @Test
+    void appendsMessagesAfterReloadingConversationMemory() {
+        String conversationId = UUID.randomUUID().toString();
+
+        try {
+            chatMemory.add(
+                    conversationId,
+                    List.of(
+                            new UserMessage("What is the status of order 1?"),
+                            new AssistantMessage("Order #1 is SHIPPED.")
+                    )
+            );
+
+            ChatMemory reloadedMemory =
+                    MessageWindowChatMemory.builder()
+                            .chatMemoryRepository(chatMemoryRepository)
+                            .maxMessages(20)
+                            .build();
+
+            reloadedMemory.add(
+                    conversationId,
+                    List.of(
+                            new UserMessage("Which carrier is delivering it?")
+                    )
+            );
+
+            List<Message> messages = reloadedMemory.get(conversationId);
+
+            assertThat(messages)
+                    .extracting(Message::getText)
+                    .containsExactly(
+                            "What is the status of order 1?",
+                            "Order #1 is SHIPPED.",
+                            "Which carrier is delivering it?"
+                    );
+        } finally {
             chatMemory.clear(conversationId);
         }
     }

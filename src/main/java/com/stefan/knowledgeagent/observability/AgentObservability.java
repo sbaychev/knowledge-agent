@@ -39,7 +39,8 @@ public class AgentObservability {
             "lookup_order",
             "lookup_shipment_by_order",
             "lookup_payment_by_order",
-            "lookup_refunds_by_order"
+            "lookup_refunds_by_order",
+            "search_knowledge_base"
     );
 
     @Autowired
@@ -104,6 +105,7 @@ public class AgentObservability {
     ) {
 
         if (!enabled) {
+
             return operation.get();
         }
 

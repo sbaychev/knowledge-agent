@@ -11,6 +11,7 @@ public class PostgresTestConfiguration {
     @Bean
     @ServiceConnection
     PostgreSQLContainer<?> postgresContainer() {
-        return new PostgreSQLContainer<>("postgres:17");
+
+        return new PostgreSQLContainer<>("pgvector/pgvector:pg17");
     }
 }

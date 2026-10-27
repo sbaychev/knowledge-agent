@@ -2,7 +2,7 @@
 
 A Java 25 / Spring Boot service for order lifecycle management and AI-assisted order support. It combines a conventional REST API and PostgreSQL-backed domain model with a read-only LLM agent that retrieves transactional facts through application-owned tools.
 
-> **Project status:** Active development. Order, shipment, payment, refund, and agent conversation flows are implemented. The agent has four read-only tools, bounded PostgreSQL-backed chat memory, explicit conversation lifecycle management, structured provider error handling, request correlation IDs, and Micrometer instrumentation. Automated testing and operational hardening are in progress; run the test suite before treating a branch as release-ready.
+> **Project status:** Active development. The order, shipment, payment, refund, and conversation flows use application-owned tools and PostgreSQL-backed storage. The agent also supports an optional RAG knowledge base for versioned policy and process documents. Automated testing and operational hardening are in progress; run the test suite before treating a branch as release-ready.
 
 ## Features
 
@@ -37,6 +37,19 @@ The four application-owned tools are:
 
 The model has no database credentials and does not connect directly to PostgreSQL. Tool calls are executed by the application and return bounded results to the model.
 
+### RAG knowledge base
+
+An optional `rag` profile adds retrieval-augmented generation (RAG) for policy and process questions. It is separate from the transactional tools above: the knowledge base answers questions about documented rules, while order-specific shipment, payment, and refund status must still come from the live transactional tools.
+
+- Loads versioned Markdown documents from `src/main/resources/knowledge/`; the current examples are `shipping-policy.md`, `refund-policy.md`, and `warranty-policy.md`.
+- Uses an OpenAI-compatible embedding endpoint independently of the chat-model provider. The current configuration uses `text-embedding-3-small` with 1,536 dimensions.
+- Stores document embeddings and source metadata in PostgreSQL with pgvector. The schema is managed by Flyway; the Spring AI vector-store schema auto-initializer is disabled.
+- Exposes the read-only `search_knowledge_base` tool. It returns document excerpts with source name, source ID, version, and chunk metadata so the model can formulate an answer grounded in retrieved content.
+- The current retrieval defaults are `top-k: 5` and `similarity-threshold: 0.35`; tune them using retrieval evaluation rather than changing them solely to improve one example answer.
+- The policy files are demonstration content, not authoritative customer policy. Replace them with approved documents before using the agent for real customer support.
+
+The RAG retrieval result is evidence for the answer, not a substitute for a transactional lookup. For example, a return-window question can be answered from the Refund Policy; the refund status for a particular order must be checked with the refund tools.
+
 ### Observability and error handling
 
 - `X-Correlation-ID` is accepted when valid, generated when absent or invalid, and returned in the HTTP response header.
@@ -59,6 +72,7 @@ The model has no database credentials and does not connect directly to PostgreSQ
 - Docker Compose for local PostgreSQL
 - Spring Boot Actuator and Micrometer
 - Spring AI JDBC chat-memory repository
+- Spring AI pgvector vector store and OpenAI-compatible embeddings for RAG
 - JUnit 5, Mockito, AssertJ, and Testcontainers
 - An LLM endpoint compatible with the selected Spring AI provider adapter; the current local setup uses an Anthropic-compatible proxy on port `6655`
 
@@ -84,6 +98,14 @@ flowchart TD
     ChatClient --> Memory[Bounded MessageWindowChatMemory]
     Memory --> MemoryDB[(SPRING_AI_CHAT_MEMORY in PostgreSQL)]
     ChatClient --> Tools[Read-only tools]
+    ChatClient --> KnowledgeTool[search_knowledge_base]
+
+    KnowledgeTool --> Retrieval[Knowledge retrieval]
+    Retrieval --> VectorStore[pgvector vector store]
+    Corpus[Versioned Markdown corpus] --> Ingestion[Knowledge ingestion]
+    Ingestion --> VectorStore
+    Embeddings[OpenAI-compatible embedding endpoint] <--> Ingestion
+    Embeddings <--> Retrieval
 
     Tools --> OrderTool[lookup_order]
     Tools --> ShipmentTool[lookup_shipment_by_order]
@@ -102,7 +124,7 @@ The model chooses whether tools are needed. The application executes each select
 
 - JDK 25
 - Docker Engine / Docker Desktop with Docker Compose
-- The repository's Maven Wrapper (`./mvnw`)
+- Maven installed and available as `mvn`
 - A local LLM proxy running on port `6655`, configured with an available model and compatible tool calling
 - `curl` and `jq` for the API examples and the live evaluation script
 - [`glow`](https://github.com/charmbracelet/glow) to render Markdown responses and pretty-printed JSON in the terminal
@@ -156,12 +178,27 @@ knowledge-agent:
 
 The provider adapter maps these settings to the selected protocol's Spring AI properties. To use another provider, add the corresponding Spring AI starter and adapter profile; changing only the URL is not sufficient when the upstream protocol differs. The endpoint must support the capabilities used by the agent, particularly tool calling.
 
+### 3. Configure embeddings for the RAG profile (optional)
+
+RAG uses a separate OpenAI-compatible embedding endpoint; it does not require the chat model itself to be OpenAI. Keep the chat-provider profiles you already use and add `rag`. For the local Hyperspace proxy on port `6655`, the example below assumes you use the documented `local` and `anthropic` chat profiles:
+
+```dotenv
+SPRING_PROFILES_ACTIVE=local,anthropic,rag
+EMBEDDING_BASE_URL=http://localhost:6655/openai/v1
+EMBEDDING_API_KEY=local-embedding-proxy
+EMBEDDING_MODEL=text-embedding-3-small
+```
+
+Use the API key accepted by your proxy. `EMBEDDING_BASE_URL` must be the OpenAI-compatible API base URL ending in `/openai/v1`, not the individual `/embeddings` endpoint. If you use another chat provider, keep that provider's required profile enabled alongside `rag`.
+
+The embedding model must produce 1,536-dimensional vectors to match the `knowledge_vectors` schema. The RAG profile configures pgvector with schema initialization disabled because Flyway owns the database schema. Start PostgreSQL and apply migrations before starting the application with RAG enabled.
+
 Do not commit actual credentials or secrets. `application-local.yml` should contain only environment-variable references and harmless local defaults. If your local files differ from these examples, merge the settings instead of replacing unrelated configuration.
 
-### 3. Start the service
+### 4. Start the service
 
 ```bash
-./mvnw spring-boot:run
+mvn spring-boot:run
 ```
 
 Check application health and render the JSON response clearly:
@@ -176,7 +213,7 @@ Build and run the tests:
 
 ```bash
 set -o pipefail
-./mvnw clean verify 2>&1 | glow -
+mvn clean verify 2>&1 | glow -
 ```
 
 Integration tests that use Testcontainers require Docker to be available. Resolve compiler errors, failing tests, or context-startup failures before pushing; a successful compilation alone does not prove that integration tests are green.
@@ -260,6 +297,23 @@ The response envelope has this shape (the answer below is illustrative; natural-
   "answer": "Markdown answer returned by the agent"
 }
 ```
+
+### Example: ask a documented policy question with RAG
+
+With PostgreSQL running, the policy corpus loaded, and the application started with the `rag` profile, ask a question whose answer is present in the documents:
+
+```bash
+MESSAGE='What is the return window according to the documented policy?'
+
+curl -sS \
+  -X POST http://localhost:8080/api/v1/agent/chat \
+  -H 'Content-Type: application/json' \
+  -d "$(jq -n --arg message "$MESSAGE" '{message: $message}')" \
+  | jq -r '.answer' \
+  | glow -
+```
+
+For the demonstration Refund Policy version 1.0, the supported return window is **30 calendar days from delivery**. A good response should answer that directly and identify the source and version; it should not dump raw `SOURCE`/`EXCERPT` blocks. The exact prose can vary by model. The policy is illustrative and must not be treated as a real customer policy.
 
 ### Example: follow up using the conversation ID
 
@@ -369,7 +423,7 @@ SELECT
     COALESCE(SUM(oi.quantity * oi.unit_price), 0) AS items_total,
     o.total_amount - COALESCE(SUM(oi.quantity * oi.unit_price), 0) AS difference
 FROM orders o
-LEFT JOIN order_items oi ON oi.order_id = o.id
+         LEFT JOIN order_items oi ON oi.order_id = o.id
 GROUP BY o.id, o.status, o.total_amount, o.currency
 ORDER BY o.id;
 ```
@@ -379,7 +433,7 @@ The local development database can be recreated if you intentionally want to dis
 ```bash
 docker compose down -v
 docker compose up -d
-./mvnw spring-boot:run
+mvn spring-boot:run
 ```
 
 > **Warning:** `docker compose down -v` removes Compose-managed volumes and permanently deletes the local PostgreSQL data in those volumes. Do not use it against a database containing data you need. Treat an applied migration as immutable in shared/persistent environments and add a new migration for later changes.
@@ -390,7 +444,7 @@ Run the complete suite with:
 
 ```bash
 set -o pipefail
-./mvnw clean test 2>&1 | glow -
+mvn clean test 2>&1 | glow -
 ```
 
 The test suite includes unit tests for domain services and tools, API error mapping, chat memory/conversation lifecycle, PostgreSQL-backed chat-memory persistence, observability, request correlation, and scripted-model tool calling. Integration tests use Testcontainers and require a functioning Docker installation. Tests that exercise the LLM agent's tool loop should use a scripted/fake `ChatModel` so they do not need a running provider or paid API calls.
@@ -435,7 +489,7 @@ The script makes real LLM requests and may consume provider capacity. It is a de
 - [ ] Expand the live evaluation scenarios and add provider-independent regression tests for tool selection, missing records, multi-tool questions, and follow-up resolution.
 - [ ] Add a separate full-fidelity conversation audit/history store if tool-call replay or compliance-grade conversation history becomes a requirement.
 - [ ] Add tracing/exporter configuration if distributed traces are needed beyond request correlation IDs and Micrometer metrics.
-- [ ] Add RAG using PostgreSQL/pgvector and a versioned knowledge corpus.
+- [ ] Add retrieval and answer-grounding evaluation for RAG, including source attribution, irrelevant results, and questions not answered by the corpus.
 - [ ] Add MCP integration tests, CI build/test workflows, and final operational documentation.
 
 ## Security notes
