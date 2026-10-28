@@ -470,6 +470,42 @@ BASE_URL=http://localhost:8080 REQUEST_TIMEOUT_SECONDS=120 \\
 
 The script makes real LLM requests and may consume provider capacity. It is a development/acceptance check, not a deterministic unit test. Keep the scripted `ChatModel` tests for deterministic tool-calling and CI validation. The script exits non-zero if an expected fact is missing or an API request fails. It prints each Markdown answer with `glow` and the final evaluation report as pretty JSON through `jq` and `glow`.
 
+## Agent execution and tool limits
+
+The agent uses multiple layers of execution protection:
+
+- `AgentExecutionDeadline` bounds the duration of an agent request.
+- The bounded `agentExecutionExecutor` controls concurrent work and
+  queue capacity. Rejected tasks are mapped to a structured API error.
+- Spring AI enforces the maximum number of calls per tool and the
+  maximum total number of tool calls within a turn.
+- `BoundedToolCallingAdvisor` enforces the maximum number of
+  tool-calling rounds per turn. A request for another tool round
+  beyond the configured maximum is rejected before that batch executes.
+- Tool-limit breaches use a structured HTTP `422` response with
+  error code `AGENT_TOOL_LIMIT_EXCEEDED`.
+
+The configured defaults are:
+
+| Setting | Default | Meaning |
+|---|---:|---|
+| `spring.ai.tools.limits.max-calls-per-tool-default` | `8` | Maximum calls per tool in one turn |
+| `spring.ai.tools.limits.max-total-tool-calls` | `15` | Maximum calls across all tools in one turn |
+| `agent.limits.max-iterations` | `8` | Maximum tool-calling rounds in one turn |
+| `spring.ai.tools.limits.on-limit-exceeded` | `THROW` | Required for structured limit error handling |
+
+These values are configurable through application properties and the
+corresponding environment variables. They are initial safety defaults,
+not results of a load test.
+
+### Test execution limits
+
+Run the focused regression tests:
+
+```bash
+chmod +x scripts/test-agent-limits.sh
+./scripts/test-agent-limits.sh
+
 ## Development principles
 
 - Keep business rules in domain/services, not in controllers or model prompts.

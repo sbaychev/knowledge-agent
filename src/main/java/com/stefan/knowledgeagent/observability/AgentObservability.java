@@ -33,6 +33,12 @@ public class AgentObservability {
     private static final String OUTCOME_SUCCESS = "success";
     private static final String OUTCOME_FAILURE = "failure";
 
+    private static final String TOOL_ITERATIONS =
+            "knowledge.agent.tool.iterations";
+
+    private static final String TOOL_LIMIT_EXCEEDED =
+            "knowledge.agent.tool.limit.exceeded";
+
     public static final String OUTCOME = "outcome";
 
     private static final Set<String> KNOWN_TOOLS = Set.of(
@@ -61,6 +67,36 @@ public class AgentObservability {
 
         this.meterRegistry = meterRegistry;
         this.enabled = enabled;
+    }
+
+    public void recordToolCallingIteration() {
+
+        if (!enabled) {
+
+            return;
+        }
+
+        meterRegistry.counter(TOOL_ITERATIONS).increment();
+    }
+
+    public void recordToolLimitExceeded(String limitType) {
+
+        if (!enabled) {
+            return;
+        }
+
+        String safeLimitType = switch (limitType) {
+            case "iteration" -> "iteration";
+            case "tool_call" -> "tool_call";
+            default -> "unknown";
+        };
+
+        meterRegistry.counter(
+                TOOL_LIMIT_EXCEEDED,
+                "limit",
+                safeLimitType
+        ).increment();
+
     }
 
     /**

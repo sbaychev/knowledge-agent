@@ -3,6 +3,9 @@ package com.stefan.knowledgeagent.api;
 import com.anthropic.errors.AnthropicException;
 import com.anthropic.errors.AnthropicServiceException;
 import com.stefan.knowledgeagent.api.dto.ApiErrorResponse;
+import com.stefan.knowledgeagent.common.exception.AgentExecutionRejectedException;
+import com.stefan.knowledgeagent.common.exception.AgentExecutionTimeoutException;
+import com.stefan.knowledgeagent.common.exception.AgentToolLimitExceededException;
 import com.stefan.knowledgeagent.common.exception.ResourceNotFoundException;
 import com.stefan.knowledgeagent.order.exception.InvalidOrderStateException;
 import com.stefan.knowledgeagent.payment.exception.InvalidPaymentStateException;
@@ -333,6 +336,68 @@ public class ApiExceptionHandler {
         );
 
         return error(status, code, message, request, Map.of());
+    }
+
+    @ExceptionHandler(AgentExecutionTimeoutException.class)
+    public ResponseEntity<ApiErrorResponse> handleAgentExecutionTimeout(
+            AgentExecutionTimeoutException exception,
+            HttpServletRequest request
+    ) {
+        log.warn(
+                "Agent execution timed out for {} after {}",
+                request.getRequestURI(),
+                exception.timeout()
+        );
+
+        return error(
+                HttpStatus.GATEWAY_TIMEOUT,
+                "AGENT_EXECUTION_TIMEOUT",
+                "The agent could not complete the request within the configured time limit.",
+                request,
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(AgentExecutionRejectedException.class)
+    public ResponseEntity<ApiErrorResponse> handleAgentExecutionRejected(
+            AgentExecutionRejectedException exception,
+            HttpServletRequest request
+    ) {
+
+        log.warn(
+                "Agent execution was rejected for {}",
+                request.getRequestURI()
+        );
+
+        return error(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "AGENT_CAPACITY_EXCEEDED",
+                "The agent is currently unavailable. Please retry shortly.",
+                request,
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(AgentToolLimitExceededException.class)
+    public ResponseEntity<ApiErrorResponse> handleAgentToolLimitExceeded(
+            AgentToolLimitExceededException exception,
+            HttpServletRequest request
+    ) {
+
+        log.warn(
+                "Agent execution limit exceeded for {} (limit={})",
+                request.getRequestURI(),
+                exception.reason().metricTag()
+        );
+
+        return error(
+                HttpStatus.UNPROCESSABLE_CONTENT,
+                "AGENT_TOOL_LIMIT_EXCEEDED",
+                "The agent reached its configured tool-call or iteration limit. "
+                        + "Try a more specific question.",
+                request,
+                Map.of()
+        );
     }
 
 }

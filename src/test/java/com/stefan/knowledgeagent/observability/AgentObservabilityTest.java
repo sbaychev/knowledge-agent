@@ -104,4 +104,38 @@ class AgentObservabilityTest {
                 .count())
                 .isEqualTo(1.0);
     }
+
+    @Test
+    void recordsToolIterationsAndLimitBreaches() {
+
+        observability.recordToolCallingIteration();
+        observability.recordToolCallingIteration();
+
+        observability.recordToolLimitExceeded("iteration");
+        observability.recordToolLimitExceeded("tool_call");
+        observability.recordToolLimitExceeded("untrusted-input");
+
+        assertThat(registry.get("knowledge.agent.tool.iterations")
+                .counter()
+                .count())
+                .isEqualTo(2.0);
+
+        assertThat(registry.get("knowledge.agent.tool.limit.exceeded")
+                .tag("limit", "iteration")
+                .counter()
+                .count())
+                .isEqualTo(1.0);
+
+        assertThat(registry.get("knowledge.agent.tool.limit.exceeded")
+                .tag("limit", "tool_call")
+                .counter()
+                .count())
+                .isEqualTo(1.0);
+
+        assertThat(registry.get("knowledge.agent.tool.limit.exceeded")
+                .tag("limit", "unknown")
+                .counter()
+                .count())
+                .isEqualTo(1.0);
+    }
 }

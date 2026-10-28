@@ -1,5 +1,7 @@
 package com.stefan.knowledgeagent.order;
 
+import com.stefan.knowledgeagent.agent.AgentExecutionDeadline;
+import com.stefan.knowledgeagent.agent.BoundedToolCallingAdvisor;
 import com.stefan.knowledgeagent.observability.AgentObservability;
 import com.stefan.knowledgeagent.tools.KnowledgeSearchTool;
 import com.stefan.knowledgeagent.tools.OrderLookupTool;
@@ -91,6 +93,8 @@ public class OrderSupportAgentService {
     private final RefundLookupTool refundLookupTool;
     private final KnowledgeSearchTool knowledgeSearchTool;
     private final AgentObservability observability;
+    private final AgentExecutionDeadline executionDeadline;
+    private final BoundedToolCallingAdvisor boundedToolCallingAdvisor;
 
     /**
      * Spring constructor.
@@ -107,9 +111,10 @@ public class OrderSupportAgentService {
             OrderLookupTool orderLookupTool,
             ShipmentLookupTool shipmentLookupTool,
             PaymentLookupTool paymentLookupTool,
-            RefundLookupTool refundLookupTool
+            RefundLookupTool refundLookupTool,
+            AgentExecutionDeadline executionDeadline,
+            BoundedToolCallingAdvisor boundedToolCallingAdvisor
     ) {
-
         this(
                 chatClientBuilder,
                 chatMemory,
@@ -118,14 +123,12 @@ public class OrderSupportAgentService {
                 orderLookupTool,
                 shipmentLookupTool,
                 paymentLookupTool,
-                refundLookupTool
+                refundLookupTool,
+                executionDeadline,
+                boundedToolCallingAdvisor
         );
     }
 
-    /**
-     * Preserves direct construction using the previous constructor
-     * signature that includes AgentObservability.
-     */
     public OrderSupportAgentService(
             ChatClient.Builder chatClientBuilder,
             @Qualifier("agentChatMemory") ChatMemory chatMemory,
@@ -133,7 +136,10 @@ public class OrderSupportAgentService {
             OrderLookupTool orderLookupTool,
             ShipmentLookupTool shipmentLookupTool,
             PaymentLookupTool paymentLookupTool,
-            RefundLookupTool refundLookupTool
+            RefundLookupTool refundLookupTool,
+            AgentExecutionDeadline executionDeadline,
+            BoundedToolCallingAdvisor boundedToolCallingAdvisor
+
     ) {
 
         this(
@@ -144,14 +150,12 @@ public class OrderSupportAgentService {
                 orderLookupTool,
                 shipmentLookupTool,
                 paymentLookupTool,
-                refundLookupTool
+                refundLookupTool,
+                executionDeadline,
+                boundedToolCallingAdvisor
         );
     }
 
-    /**
-     * Preserves direct construction in existing unit tests
-     * that do not provide AgentObservability.
-     */
     public OrderSupportAgentService(
             ChatClient.Builder chatClientBuilder,
             @Qualifier("agentChatMemory") ChatMemory chatMemory,
@@ -169,7 +173,9 @@ public class OrderSupportAgentService {
                 orderLookupTool,
                 shipmentLookupTool,
                 paymentLookupTool,
-                refundLookupTool
+                refundLookupTool,
+                AgentExecutionDeadline.direct(),
+                (BoundedToolCallingAdvisor) null
         );
     }
 
@@ -184,14 +190,35 @@ public class OrderSupportAgentService {
             OrderLookupTool orderLookupTool,
             ShipmentLookupTool shipmentLookupTool,
             PaymentLookupTool paymentLookupTool,
-            RefundLookupTool refundLookupTool
+            RefundLookupTool refundLookupTool,
+            AgentExecutionDeadline executionDeadline,
+            BoundedToolCallingAdvisor boundedToolCallingAdvisor
     ) {
 
-        this.chatClient = chatClientBuilder
-                .defaultAdvisors(
-                        MessageChatMemoryAdvisor.builder(chatMemory).build()
-                )
-                .build();
+        MessageChatMemoryAdvisor memoryAdvisor =
+                MessageChatMemoryAdvisor.builder(chatMemory).build();
+
+        if (boundedToolCallingAdvisor == null) {
+            /*
+             * Compatibility path for tests that construct the service
+             * manually without a Spring application context.
+             */
+            this.chatClient = chatClientBuilder
+                    .defaultAdvisors(memoryAdvisor)
+                    .build();
+        } else {
+            /*
+             * Production path: explicitly register our bounded advisor.
+             * Spring AI auto-registers the default ToolCallingAdvisor only
+             * when the chain does not already contain a ToolAdvisor.
+             */
+            this.chatClient = chatClientBuilder
+                    .defaultAdvisors(
+                            memoryAdvisor,
+                            boundedToolCallingAdvisor
+                    )
+                    .build();
+        }
 
         this.observability = observability;
         this.knowledgeSearchTool = knowledgeSearchTool;
@@ -199,6 +226,8 @@ public class OrderSupportAgentService {
         this.shipmentLookupTool = shipmentLookupTool;
         this.paymentLookupTool = paymentLookupTool;
         this.refundLookupTool = refundLookupTool;
+        this.executionDeadline = executionDeadline;
+        this.boundedToolCallingAdvisor = boundedToolCallingAdvisor;
     }
 
     public String answer(String message, String conversationId) {
@@ -217,47 +246,50 @@ public class OrderSupportAgentService {
             );
         }
 
-        return observability.recordAgentRequest(() -> {
+        return observability.recordAgentRequest(
+                () -> executionDeadline.execute(() -> {
 
-            ChatClient.ChatClientRequestSpec request = chatClient.prompt()
-                    .system(SYSTEM_PROMPT)
-                    .user(message);
+                    ChatClient.ChatClientRequestSpec request =
+                            chatClient.prompt()
+                                    .system(SYSTEM_PROMPT)
+                                    .user(message);
 
-            if (knowledgeSearchTool == null) {
+                    if (knowledgeSearchTool == null) {
 
-                request = request.tools(
-                        orderLookupTool,
-                        shipmentLookupTool,
-                        paymentLookupTool,
-                        refundLookupTool
-                );
-            } else {
+                        request = request.tools(
+                                orderLookupTool,
+                                shipmentLookupTool,
+                                paymentLookupTool,
+                                refundLookupTool
+                        );
+                    } else {
 
-                request = request.tools(
-                        orderLookupTool,
-                        shipmentLookupTool,
-                        paymentLookupTool,
-                        refundLookupTool,
-                        knowledgeSearchTool
-                );
-            }
+                        request = request.tools(
+                                orderLookupTool,
+                                shipmentLookupTool,
+                                paymentLookupTool,
+                                refundLookupTool,
+                                knowledgeSearchTool
+                        );
+                    }
 
-            String answer = request
-                    .advisors(advisorSpec -> advisorSpec.param(
-                            ChatMemory.CONVERSATION_ID,
-                            conversationId
-                    ))
-                    .call()
-                    .content();
+                    String answer = request
+                            .advisors(advisorSpec -> advisorSpec.param(
+                                    ChatMemory.CONVERSATION_ID,
+                                    conversationId
+                            ))
+                            .call()
+                            .content();
 
-            if (!StringUtils.hasText(answer)) {
+                    if (!StringUtils.hasText(answer)) {
 
-                throw new IllegalStateException(
-                        "The AI provider returned an empty answer."
-                );
-            }
+                        throw new IllegalStateException(
+                                "The AI provider returned an empty answer."
+                        );
+                    }
 
-            return answer;
-        });
+                    return answer;
+                })
+        );
     }
 }

@@ -103,6 +103,37 @@ assert_not_contains() {
   fi
 }
 
+metric_count() {
+  local metric="$1"
+  local tag="${2:-}"
+  local url="${BASE_URL%/}/actuator/metrics/${metric}"
+  local body
+
+  if [[ -n "$tag" ]]; then
+    body="$(curl -fsS \
+      --connect-timeout 2 \
+      --max-time 3 \
+      --get \
+      --data-urlencode "tag=$tag" \
+      "$url" 2>/dev/null)" || {
+        printf 'n/a'
+        return 0
+      }
+  else
+    body="$(curl -fsS \
+      --connect-timeout 2 \
+      --max-time 3 \
+      "$url" 2>/dev/null)" || {
+        printf 'n/a'
+        return 0
+      }
+  fi
+
+  printf '%s\n' "$body" \
+    | jq -r '[.measurements[]? | select(.statistic == "COUNT") | .value][0] // "n/a"' \
+      2>/dev/null || printf 'n/a'
+}
+
 printf 'Running live agent evaluation against %s\n\n' "$CHAT_ENDPOINT"
 printf 'The checks validate factual content from the local seed data; natural-language wording may vary.\n\n'
 
@@ -202,6 +233,23 @@ jq -Rn '
       checks: $checks
     }
 ' "$RESULTS_FILE" | glow -
+
+printf '\n## Cumulative agent metrics\n\n' | glow -
+
+printf 'agent_requests_success=%s\n' \
+  "$(metric_count knowledge.agent.requests outcome:success)"
+
+printf 'agent_requests_failure=%s\n' \
+  "$(metric_count knowledge.agent.requests outcome:failure)"
+
+printf 'agent_tool_iterations=%s\n' \
+  "$(metric_count knowledge.agent.tool.iterations)"
+
+printf 'agent_iteration_limit_exceeded=%s\n' \
+  "$(metric_count knowledge.agent.tool.limit.exceeded limit:iteration)"
+
+printf 'agent_tool_call_limit_exceeded=%s\n' \
+  "$(metric_count knowledge.agent.tool.limit.exceeded limit:tool_call)"
 
 if [[ "$FAILURES" -gt 0 ]]; then
   printf 'Evaluation failed: %s check(s) did not pass. Review the answers above.\n' "$FAILURES" >&2
