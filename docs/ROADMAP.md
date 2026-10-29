@@ -47,7 +47,8 @@ The project currently relies on Spring AI's orchestration pipeline and a custom 
 - [ ] Add client-side configuration and a service abstraction for connecting to a separately managed MCP server.
 - [ ] Decide on stateless versus stateful transport based on session use, scale-out and interoperability requirements.
 - [ ] Add authentication and authorization before exposing the endpoint outside a trusted local environment.
-- [ ] Add tests for invalid URI identifiers, malformed tool arguments and missing records over MCP.
+- [x] Reject unknown policy resource IDs and malformed tool arguments in MCP protocol tests.
+- [ ] Add a protocol test for a valid tool name with a missing transactional record.
 
 Important distinction:
 - A **tool** exposes a callable capability.

@@ -89,9 +89,10 @@ The flow is:
 3. tools/list and tools/call;
 4. resources/list;
 5. resources/templates/list and resources/read;
-6. prompts/list and prompts/get.
+6. prompts/list and prompts/get;
+7. malformed tool arguments and unknown policy resource IDs must be rejected by the protocol layer.
 
-This catches Spring context failures and contract mismatches between annotated beans and MCP protocol messages. It intentionally does not prove the live database or model provider is available. The shell smoke script covers that additional boundary.
+This catches Spring context failures and contract mismatches between annotated beans and MCP protocol messages. It intentionally does not prove the live database or model provider is available. The shell smoke script covers that additional boundary, including invalid-input paths.
 
 ### Live end-to-end MCP smoke test
 

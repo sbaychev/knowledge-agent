@@ -31,8 +31,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest(
@@ -66,7 +68,7 @@ class McpServerHttpIntegrationTest {
     private OrderLookupTool orderLookupTool;
 
     @Test
-    void discoversAndInvokesOrderLookupThroughMcpHttp()
+    void exposesMcpToolsResourcesAndPromptsAndRejectsInvalidInputs()
             throws Exception {
 
         when(orderLookupTool.lookupOrder(42L))
@@ -270,6 +272,62 @@ class McpServerHttpIntegrationTest {
                 .contains("Investigate order 42")
                 .contains("lookup_order")
                 .contains("Do not create, cancel, dispatch, deliver, charge, or refund");
+
+        // Invalid resource IDs must not be resolved to arbitrary classpath files.
+        HttpResponse<String> invalidPolicyResponse = postRpc(
+                "resources/read",
+                9,
+                Map.of("uri", "knowledge://policy/not-allow-listed"),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(invalidPolicyResponse.statusCode())
+                .as("MCP resources/read with an unknown policy ID: %s",
+                        invalidPolicyResponse.body())
+                .isEqualTo(200);
+
+        JsonNode invalidPolicyEnvelope =
+                parseRpcResponse(invalidPolicyResponse.body());
+
+        assertThat(invalidPolicyEnvelope.path("error").isMissingNode())
+                .as("Unknown policy IDs must be returned as an MCP protocol error")
+                .isFalse();
+
+        // Malformed arguments must fail before invoking the application-owned tool.
+        clearInvocations(orderLookupTool);
+
+        HttpResponse<String> malformedArgumentsResponse = postRpc(
+                "tools/call",
+                10,
+                Map.of(
+                        "name", "lookup_order",
+                        "arguments", Map.of("orderId", "not-a-number")
+                ),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(malformedArgumentsResponse.statusCode())
+                .as("MCP tools/call with a malformed order ID: %s",
+                        malformedArgumentsResponse.body())
+                .isEqualTo(200);
+
+        JsonNode malformedArgumentsEnvelope =
+                parseRpcResponse(malformedArgumentsResponse.body());
+
+        boolean rejectedAsRpcError =
+                !malformedArgumentsEnvelope.path("error").isMissingNode();
+        boolean rejectedAsToolError =
+                malformedArgumentsEnvelope.path("result")
+                        .path("isError")
+                        .asBoolean(false);
+
+        assertThat(rejectedAsRpcError || rejectedAsToolError)
+                .as("Malformed tool arguments must be rejected by the MCP server")
+                .isTrue();
+
+        verifyNoInteractions(orderLookupTool);
     }
 
     private HttpResponse<String> postRpc(

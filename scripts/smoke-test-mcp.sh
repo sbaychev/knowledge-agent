@@ -136,6 +136,17 @@ assert_rpc_result() {
   printf '%s\n' "$json"
 }
 
+assert_rpc_error_or_tool_error() {
+  local label="$1"
+  local json
+  json="$(response_json "$RPC_BODY")" || fail "$label returned a non-JSON-RPC response."
+
+  printf '%s' "$json" | jq -e 'has("error") or (.result.isError == true)' >/dev/null \
+    || fail "$label unexpectedly succeeded; expected an MCP error response."
+
+  printf '%s\n' "$json"
+}
+
 printf 'MCP Streamable HTTP smoke test: %s\n\n' "$MCP_URL"
 
 # 1. MCP initialize handshake.
@@ -181,6 +192,14 @@ printf '%s' "$ORDER_TEXT" | grep -Eiq 'Order ID:[[:space:]]*1' \
   || fail 'lookup_order response did not identify seeded order 1.'
 pass 'tools/call executes lookup_order over HTTP and returns order 1'
 
+# 4a. A malformed argument must be rejected rather than passed to the tool.
+rpc tools/call 9 "$(jq -cn '{name:"lookup_order", arguments:{orderId:"not-a-number"}}')"
+assert_status 200 'tools/call malformed order ID'
+MALFORMED_TOOL_JSON="$(assert_rpc_error_or_tool_error 'tools/call malformed order ID')"
+printf '%s' "$MALFORMED_TOOL_JSON" | jq -e 'has("error") or (.result.isError == true)' >/dev/null \
+  || fail 'Malformed tool argument was not rejected.'
+pass 'tools/call rejects a malformed order ID'
+
 # 5. Discover the static resource catalog.
 rpc resources/list 4 '{}'
 assert_status 200 'resources/list'
@@ -207,8 +226,16 @@ printf '%s' "$POLICY_TEXT" | grep -Fq '# Refund Policy' || fail 'Refund Policy r
 printf '%s' "$POLICY_TEXT" | grep -Eiq '30 calendar days' || fail 'Refund Policy resource content did not include the documented return window.'
 pass 'resources/read serves the Refund Policy Markdown from the classpath'
 
+# 6a. The URI template must not allow an unlisted resource identifier.
+rpc resources/read 10 "$(jq -cn '{uri:"knowledge://policy/not-allow-listed"}')"
+assert_status 200 'resources/read unknown policy ID'
+UNKNOWN_POLICY_JSON="$(assert_rpc_error_or_tool_error 'resources/read unknown policy ID')"
+printf '%s' "$UNKNOWN_POLICY_JSON" | jq -e 'has("error") or (.result.isError == true)' >/dev/null \
+  || fail 'Unknown policy ID was not rejected.'
+pass 'resources/read rejects unknown policy IDs'
+
 # 7. Discover and render the reusable investigation prompt.
-rpc prompts/list 7 '{}'
+rpc prompts/list 11 '{}'
 assert_status 200 'prompts/list'
 PROMPTS_JSON="$(assert_rpc_result 'prompts/list')"
 printf '%s' "$PROMPTS_JSON" | jq -e \
@@ -216,7 +243,7 @@ printf '%s' "$PROMPTS_JSON" | jq -e \
   || fail 'prompts/list did not expose investigate-order.'
 pass 'prompts/list publishes investigate-order'
 
-rpc prompts/get 8 "$(jq -cn '{name:"investigate-order", arguments:{orderId:"1"}}')"
+rpc prompts/get 12 "$(jq -cn '{name:"investigate-order", arguments:{orderId:"1"}}')"
 assert_status 200 'prompts/get investigate-order'
 PROMPT_JSON="$(assert_rpc_result 'prompts/get investigate-order')"
 PROMPT_TEXT="$(printf '%s' "$PROMPT_JSON" | jq -er '.result.messages[]? | .content.text' | head -n 1)"

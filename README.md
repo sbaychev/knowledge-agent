@@ -657,6 +657,7 @@ Near-term next steps:
 - [x] Expose allow-listed policy documents as MCP resources.
 - [x] Add a reusable read-only order investigation prompt.
 - [x] Add live MCP smoke test and local preflight/CI verification scripts.
+- [x] Cover malformed MCP tool arguments and unknown policy resource IDs in integration and smoke tests.
 - [ ] Add a durable execution/event model before implementing long-running approval flows.
 - [ ] Add explicit authenticated principal/authorization and conversation ownership checks.
 - [ ] Add policy evaluation and human approval before exposing any state-changing agent tool.
