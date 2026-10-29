@@ -11,9 +11,10 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
-import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
-import org.springframework.boot.hibernate.autoconfigure.HibernateJpaAutoConfiguration;
-import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
+import org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration;
+import org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
@@ -44,7 +45,8 @@ import static org.mockito.Mockito.when;
                 "spring.ai.vectorstore.type=none",
                 "spring.ai.mcp.server.protocol=STREAMABLE",
                 "spring.ai.mcp.server.type=SYNC",
-                "spring.ai.mcp.server.annotation-scanner.enabled=true"
+                "spring.ai.mcp.server.annotation-scanner.enabled=true",
+                "spring.ai.model.chat.memory=none"
         }
 )
 @ActiveProfiles("mcp-server")
@@ -72,7 +74,6 @@ class McpServerHttpIntegrationTest {
         when(orderLookupTool.lookupOrder(42L))
                 .thenReturn("Order found. Order ID: 42");
 
-        // 1. Initialize the MCP session.
         HttpResponse<String> initializeResponse = postRpc(
                 "initialize",
                 1,
@@ -88,12 +89,15 @@ class McpServerHttpIntegrationTest {
                 null
         );
 
-        assertThat(initializeResponse.statusCode()).isEqualTo(200);
+        assertThat(initializeResponse.statusCode())
+                .as("MCP initialize response: %s", initializeResponse.body())
+                .isEqualTo(200);
 
-        JsonNode initializeResult =
-                parseRpcResponse(initializeResponse.body())
-                        .path("result");
+        JsonNode initializeEnvelope =
+                parseRpcResponse(initializeResponse.body());
 
+        assertThat(initializeEnvelope.path("error").isMissingNode()).isTrue();
+        JsonNode initializeResult = initializeEnvelope.path("result");
         assertThat(initializeResult.path("protocolVersion").asText())
                 .isNotBlank();
 
@@ -104,7 +108,6 @@ class McpServerHttpIntegrationTest {
                 .firstValue("Mcp-Session-Id")
                 .orElse(null);
 
-        // 2. Complete the MCP initialization handshake.
         HttpResponse<String> initializedResponse = postRpc(
                 "notifications/initialized",
                 null,
@@ -114,9 +117,9 @@ class McpServerHttpIntegrationTest {
         );
 
         assertThat(initializedResponse.statusCode())
+                .as("MCP initialized notification: %s", initializedResponse.body())
                 .isIn(200, 202, 204);
 
-        // 3. Discover the tools actually exposed by the server.
         HttpResponse<String> listResponse = postRpc(
                 "tools/list",
                 2,
@@ -125,20 +128,17 @@ class McpServerHttpIntegrationTest {
                 negotiatedProtocolVersion
         );
 
-        assertThat(listResponse.statusCode()).isEqualTo(200);
+        assertThat(listResponse.statusCode())
+                .as("MCP tools/list response: %s", listResponse.body())
+                .isEqualTo(200);
 
-        JsonNode listResult =
-                parseRpcResponse(listResponse.body());
-
-        assertThat(listResult.path("error").isMissingNode()).isTrue();
+        JsonNode listEnvelope = parseRpcResponse(listResponse.body());
+        assertThat(listEnvelope.path("error").isMissingNode()).isTrue();
 
         List<String> toolNames = new ArrayList<>();
-
-        listResult.path("result")
-                .path("tools")
-                .forEach(tool ->
-                        toolNames.add(tool.path("name").asText())
-                );
+        listEnvelope.path("result").path("tools").forEach(tool ->
+                toolNames.add(tool.path("name").asText())
+        );
 
         assertThat(toolNames).containsExactlyInAnyOrder(
                 "lookup_order",
@@ -147,7 +147,6 @@ class McpServerHttpIntegrationTest {
                 "lookup_refunds_by_order"
         );
 
-        // 4. Invoke a discovered tool through the MCP protocol.
         HttpResponse<String> callResponse = postRpc(
                 "tools/call",
                 3,
@@ -159,20 +158,56 @@ class McpServerHttpIntegrationTest {
                 negotiatedProtocolVersion
         );
 
-        assertThat(callResponse.statusCode()).isEqualTo(200);
+        assertThat(callResponse.statusCode())
+                .as("MCP tools/call response: %s", callResponse.body())
+                .isEqualTo(200);
 
-        JsonNode callResult =
-                parseRpcResponse(callResponse.body());
+        JsonNode callEnvelope = parseRpcResponse(callResponse.body());
+        assertThat(callEnvelope.path("error").isMissingNode()).isTrue();
 
-        assertThat(callResult.path("error").isMissingNode()).isTrue();
-
-        JsonNode result = callResult.path("result");
-
+        JsonNode result = callEnvelope.path("result");
         assertThat(result.path("isError").asBoolean(false)).isFalse();
         assertThat(result.path("content").get(0).path("text").asText())
                 .contains("Order found. Order ID: 42");
 
         verify(orderLookupTool).lookupOrder(42L);
+    }
+
+    @Test
+    void returnsJsonRpcErrorForUnknownMethod() throws Exception {
+        HttpResponse<String> initializeResponse = postRpc(
+                "initialize",
+                10,
+                Map.of(
+                        "protocolVersion", PROTOCOL_VERSION,
+                        "capabilities", Map.of(),
+                        "clientInfo", Map.of(
+                                "name", "knowledge-agent-test-client",
+                                "version", "1.0.0"
+                        )
+                ),
+                null,
+                null
+        );
+
+        assertThat(initializeResponse.statusCode()).isEqualTo(200);
+        JsonNode initialized = parseRpcResponse(initializeResponse.body());
+        String version = initialized.path("result").path("protocolVersion").asText();
+        String sessionId = initializeResponse.headers()
+                .firstValue("Mcp-Session-Id").orElse(null);
+
+        HttpResponse<String> response = postRpc(
+                "not/a/real/method",
+                11,
+                Map.of(),
+                sessionId,
+                version
+        );
+
+        assertThat(response.statusCode()).isBetween(400, 599);
+        JsonNode envelope = parseRpcResponse(response.body());
+        assertThat(envelope.path("error").isObject()).isTrue();
+        assertThat(envelope.path("error").path("code").isNumber()).isTrue();
     }
 
     private HttpResponse<String> postRpc(
@@ -182,16 +217,12 @@ class McpServerHttpIntegrationTest {
             String sessionId,
             String protocolVersion
     ) throws Exception {
-
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("jsonrpc", "2.0");
-
         if (id != null) {
             payload.put("id", id);
         }
-
         payload.put("method", method);
-
         if (params != null) {
             payload.put("params", params);
         }
@@ -208,7 +239,6 @@ class McpServerHttpIntegrationTest {
         if (sessionId != null) {
             request.header("Mcp-Session-Id", sessionId);
         }
-
         if (protocolVersion != null) {
             request.header("MCP-Protocol-Version", protocolVersion);
         }
@@ -221,11 +251,7 @@ class McpServerHttpIntegrationTest {
 
     private JsonNode parseRpcResponse(String body) throws Exception {
         String normalized = body.strip();
-
-        // Streamable HTTP can carry a JSON-RPC response as an SSE event.
-        if (normalized.startsWith("event:")
-                || normalized.contains("\ndata:")) {
-
+        if (normalized.startsWith("event:") || normalized.contains("\ndata:")) {
             for (String line : normalized.split("\\R")) {
                 if (line.startsWith("data:")) {
                     return objectMapper.readTree(
@@ -234,13 +260,13 @@ class McpServerHttpIntegrationTest {
                 }
             }
         }
-
         return objectMapper.readTree(normalized);
     }
 
     @SpringBootConfiguration
     @EnableAutoConfiguration(exclude = {
             DataSourceAutoConfiguration.class,
+            JdbcTemplateAutoConfiguration.class,
             HibernateJpaAutoConfiguration.class,
             FlywayAutoConfiguration.class
     })
