@@ -50,6 +50,22 @@ An optional `rag` profile adds retrieval-augmented generation (RAG) for policy a
 
 The RAG retrieval result is evidence for the answer, not a substitute for a transactional lookup. For example, a return-window question can be answered from the Refund Policy; the refund status for a particular order must be checked with the refund tools.
 
+### MCP server: tools, resources and prompts
+
+The optional **mcp-server** profile exposes a Streamable HTTP MCP endpoint at **/mcp**. This adapter is separate from the REST endpoints but delegates to the same application-owned read-only capabilities.
+
+- **Tools:** lookup_order, lookup_shipment_by_order, lookup_payment_by_order and lookup_refunds_by_order.
+- **Resources:** knowledge://policies lists the available demonstration policy files; knowledge://policy/{policyId} reads one allow-listed Markdown file.
+- **Prompt:** investigate-order generates a reusable, parameterized read-only investigation procedure for a positive numeric order ID.
+- **Transport:** the server is configured explicitly for Streamable HTTP and synchronous annotated methods.
+- **Security default:** the MCP listener binds to loopback. Configure MCP_SERVER_BIND_ADDRESS deliberately if a different interface is needed; do not expose the endpoint without authentication/network controls.
+
+A tool is a callable capability, a resource is reference data, and a prompt is reusable instruction. None of these is a policy engine. The model cannot refund or otherwise mutate an order through the current MCP tools.
+
+The policy documents are demo content and must not be used as the source of an actual customer eligibility decision. Current order/shipment/payment/refund facts still come from the transactional lookup tools.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the request flow, context/memory boundaries and the current security gaps.
+
 ### Observability and error handling
 
 - `X-Correlation-ID` is accepted when valid, generated when absent or invalid, and returned in the HTTP response header.
@@ -196,6 +212,37 @@ The embedding model must produce 1,536-dimensional vectors to match the `knowled
 Do not commit actual credentials or secrets. `application-local.yml` should contain only environment-variable references and harmless local defaults. If your local files differ from these examples, merge the settings instead of replacing unrelated configuration.
 
 ### 4. Start the service
+
+
+### 5. Start the MCP server (optional)
+
+The MCP server is enabled through the mcp-server Spring profile. It uses the same application and database; it is not a separate microservice. Ensure the local database and the local chat-provider settings from the previous step are available, then run:
+
+~~~bash
+SPRING_PROFILES_ACTIVE=local,anthropic,mcp-server mvn spring-boot:run
+~~~
+
+The configured endpoint is:
+
+- MCP Streamable HTTP: http://127.0.0.1:8080/mcp
+- Default bind address: 127.0.0.1 (loopback only)
+
+The server offers the same four read-only transaction lookup capabilities as the chat agent, three policy resources (catalog plus URI template), and the investigate-order prompt. The resources and prompt are available without enabling the optional rag profile; the separate vector-search capability requires rag.
+
+Run a protocol smoke test from another terminal:
+
+~~~bash
+MCP_BASE_URL=http://127.0.0.1:8080/mcp bash scripts/smoke-test-mcp.sh
+~~~
+
+To run the local preflight and Maven verification:
+
+~~~bash
+bash scripts/check-local.sh --database
+bash scripts/verify.sh
+~~~
+
+MCP is a protocol adapter, not authentication or authorization by itself. Keep the default loopback bind unless you have deliberately configured network access, identity and authorization.
 
 ```bash
 mvn spring-boot:run
@@ -440,14 +487,77 @@ mvn spring-boot:run
 
 ## Testing
 
-Run the complete suite with:
+The test suite is deliberately split into deterministic unit/model tests, PostgreSQL-backed integration tests, MCP protocol integration tests and live-model evaluation. They answer different questions.
 
-```bash
+### CI-equivalent verification
+
+Run the same verification lifecycle used by GitHub Actions:
+
+~~~bash
+bash scripts/verify.sh
+~~~
+
+Or run Maven directly:
+
+~~~bash
+mvn --batch-mode --no-transfer-progress clean verify
+~~~
+
+Use pipefail when piping terminal output into glow:
+
+~~~bash
 set -o pipefail
-mvn clean test 2>&1 | glow -
-```
+mvn --batch-mode --no-transfer-progress clean verify 2>&1 | glow -
+~~~
 
-The test suite includes unit tests for domain services and tools, API error mapping, chat memory/conversation lifecycle, PostgreSQL-backed chat-memory persistence, observability, request correlation, and scripted-model tool calling. Integration tests use Testcontainers and require a functioning Docker installation. Tests that exercise the LLM agent's tool loop should use a scripted/fake `ChatModel` so they do not need a running provider or paid API calls.
+The test suite includes domain and tool unit tests, API tests, conversation/memory tests, PostgreSQL/Testcontainers integration tests, model/tool orchestration tests, observability tests, and an MCP Streamable HTTP integration test. Testcontainers needs a working Docker daemon. Do not treat a successful compile as proof that database or Spring context wiring works.
+
+### Focused test suites
+
+~~~bash
+bash scripts/test-agent-limits.sh
+mvn --batch-mode --no-transfer-progress -Dtest=McpServerHttpIntegrationTest test
+mvn --batch-mode --no-transfer-progress -Dtest=SupportPolicyMcpResourcesTest,OrderSupportMcpPromptsTest test
+~~~
+
+Inspect Surefire output under target/surefire-reports/ if a test fails. For a Spring context startup failure, read the first meaningful Caused by section, not only the top-level Failed to load ApplicationContext message.
+
+### MCP protocol integration test
+
+McpServerHttpIntegrationTest boots a random-port HTTP server and drives the MCP protocol over HTTP. The application-owned transactional tool dependencies are mocked so this test remains deterministic while exercising the actual MCP transport, session/initialization flow and annotation discovery.
+
+It asserts the following flow:
+
+1. initialize with a supported protocol version;
+2. notifications/initialized;
+3. tools/list and tools/call;
+4. resources/list;
+5. resources/templates/list and resources/read;
+6. prompts/list and prompts/get.
+
+The test context explicitly excludes database auto-configuration and the JDBC chat-memory repository auto-configuration. Without that last exclusion, the context may try to create JdbcChatMemoryRepository even though no JdbcTemplate is available in this intentionally isolated protocol test.
+
+### Live MCP smoke test
+
+The live test uses the actual PostgreSQL-backed tools. Start the service with the mcp-server profile, then run:
+
+~~~bash
+MCP_BASE_URL=http://127.0.0.1:8080/mcp bash scripts/smoke-test-mcp.sh
+~~~
+
+This verifies the initialize handshake, tools discovery/call, policy resource discovery/read, resource-template discovery, and prompt discovery/rendering. It requires a running service and the seeded Order #1 data. The script does not call the chat model; it checks the MCP contract directly.
+
+### Local environment preflight
+
+~~~bash
+bash scripts/check-local.sh
+bash scripts/check-local.sh --database
+bash scripts/check-local.sh --running --mcp
+~~~
+
+The optional flags require a running Docker database, application health endpoint or MCP endpoint. The MCP preflight is only a reachability check; use smoke-test-mcp.sh for the protocol flow.
+
+More detail, including the boundary each test proves and common failure modes, is documented in [docs/TESTING.md](docs/TESTING.md).
 
 ## Live agent evaluation
 
@@ -470,41 +580,61 @@ BASE_URL=http://localhost:8080 REQUEST_TIMEOUT_SECONDS=120 \\
 
 The script makes real LLM requests and may consume provider capacity. It is a development/acceptance check, not a deterministic unit test. Keep the scripted `ChatModel` tests for deterministic tool-calling and CI validation. The script exits non-zero if an expected fact is missing or an API request fails. It prints each Markdown answer with `glow` and the final evaluation report as pretty JSON through `jq` and `glow`.
 
+## Developer scripts
+
+All scripts are designed to run from the repository root and work with bash. glow is used when installed for readable Markdown/JSON output, but is not required.
+
+| Script | Purpose | Requires |
+|---|---|---|
+| scripts/check-local.sh | Check the toolchain; optionally check Docker/PostgreSQL, app health, or MCP reachability | Java 25, Maven, curl; jq/Docker when selected |
+| scripts/verify.sh | Run the same clean verify Maven lifecycle as CI | Java 25, Maven |
+| scripts/test-agent-limits.sh | Run focused execution limit/deadline/observability regression tests | Java 25, Maven |
+| scripts/smoke-test-mcp.sh | Exercise MCP initialize, tools, resources and prompt over HTTP | Running mcp-server profile, seeded PostgreSQL, curl, jq |
+| scripts/evaluate-agent.sh | Evaluate real model + tools against seeded order facts; optional RAG cases | Running agent and configured chat provider; curl, jq |
+
+Use bash scripts directly; executable mode is not required:
+
+~~~bash
+bash scripts/check-local.sh --database
+bash scripts/verify.sh
+BASE_URL=http://127.0.0.1:8080 bash scripts/evaluate-agent.sh
+MCP_BASE_URL=http://127.0.0.1:8080/mcp bash scripts/smoke-test-mcp.sh
+~~~
+
+The live evaluation may consume provider capacity. The MCP smoke test calls the MCP protocol directly and does not ask the model to reason. Keep both of these outside deterministic CI unless the provider and environment are deliberately part of the test contract.
+
 ## Agent execution and tool limits
 
 The agent uses multiple layers of execution protection:
 
-- `AgentExecutionDeadline` bounds the duration of an agent request.
-- The bounded `agentExecutionExecutor` controls concurrent work and
-  queue capacity. Rejected tasks are mapped to a structured API error.
-- Spring AI enforces the maximum number of calls per tool and the
-  maximum total number of tool calls within a turn.
-- `BoundedToolCallingAdvisor` enforces the maximum number of
-  tool-calling rounds per turn. A request for another tool round
-  beyond the configured maximum is rejected before that batch executes.
-- Tool-limit breaches use a structured HTTP `422` response with
-  error code `AGENT_TOOL_LIMIT_EXCEEDED`.
+- AgentExecutionDeadline bounds the duration of an agent request.
+- The agentExecutionExecutor uses a bounded worker pool and queue. Rejected work is mapped to a structured API error.
+- Spring AI enforces the maximum number of calls per tool and maximum total tool calls within one model turn.
+- BoundedToolCallingAdvisor enforces the maximum number of tool-calling rounds per turn. An over-limit batch is rejected before it executes.
+- Tool-limit breaches use a structured HTTP 422 response with error code AGENT_TOOL_LIMIT_EXCEEDED.
 
-The configured defaults are:
+Default configuration:
 
 | Setting | Default | Meaning |
 |---|---:|---|
-| `spring.ai.tools.limits.max-calls-per-tool-default` | `8` | Maximum calls per tool in one turn |
-| `spring.ai.tools.limits.max-total-tool-calls` | `15` | Maximum calls across all tools in one turn |
-| `agent.limits.max-iterations` | `8` | Maximum tool-calling rounds in one turn |
-| `spring.ai.tools.limits.on-limit-exceeded` | `THROW` | Required for structured limit error handling |
+| spring.ai.tools.limits.max-calls-per-tool-default | 8 | Maximum calls per tool in one turn |
+| spring.ai.tools.limits.max-total-tool-calls | 15 | Maximum calls across all tools in one turn |
+| agent.limits.max-iterations | 8 | Maximum tool-calling rounds in one turn |
+| spring.ai.tools.limits.on-limit-exceeded | THROW | Required for structured limit error handling |
+| agent.execution.timeout | 90s | Configured synchronous wait limit |
+| agent.execution.pool.max-size | 8 | Maximum agent worker threads |
+| agent.execution.pool.queue-capacity | 16 | Maximum queued work items |
 
-These values are configurable through application properties and the
-corresponding environment variables. They are initial safety defaults,
-not results of a load test.
+Tune these values using load measurements and upstream timeout behavior; they are not a benchmark-derived production configuration.
 
-### Test execution limits
+### Focused limit tests
 
-Run the focused regression tests:
+~~~bash
+bash scripts/test-agent-limits.sh
+~~~
 
-```bash
-chmod +x scripts/test-agent-limits.sh
-./scripts/test-agent-limits.sh
+These tests cover limit configuration, the bounded tool-calling advisor, execution deadlines, queue behavior and observability. For the full suite use bash scripts/verify.sh.
+
 
 ## Development principles
 
@@ -520,13 +650,22 @@ chmod +x scripts/test-agent-limits.sh
 
 ## Roadmap
 
-- [ ] Fix and verify the full test suite after observability instrumentation and tool package refactoring.
-- [ ] Add provider error/timeout integration tests and enforce an overall agent-request deadline across model/tool iterations.
-- [ ] Expand the live evaluation scenarios and add provider-independent regression tests for tool selection, missing records, multi-tool questions, and follow-up resolution.
-- [ ] Add a separate full-fidelity conversation audit/history store if tool-call replay or compliance-grade conversation history becomes a requirement.
-- [ ] Add tracing/exporter configuration if distributed traces are needed beyond request correlation IDs and Micrometer metrics.
-- [ ] Add retrieval and answer-grounding evaluation for RAG, including source attribution, irrelevant results, and questions not answered by the corpus.
-- [ ] Add MCP integration tests, CI build/test workflows, and final operational documentation.
+The implementation status and next milestones are tracked in [docs/ROADMAP.md](docs/ROADMAP.md). The roadmap distinguishes implemented work from future work and preserves the original goal: learn the complete agent plumbing in one modular Spring Boot application.
+
+Near-term next steps:
+
+- [x] Fix MCP HTTP integration context wiring and test resource/prompt discovery.
+- [x] Expose allow-listed policy documents as MCP resources.
+- [x] Add a reusable read-only order investigation prompt.
+- [x] Add live MCP smoke test and local preflight/CI verification scripts.
+- [ ] Add a durable execution/event model before implementing long-running approval flows.
+- [ ] Add explicit authenticated principal/authorization and conversation ownership checks.
+- [ ] Add policy evaluation and human approval before exposing any state-changing agent tool.
+- [ ] Add a full-fidelity audit history separate from bounded chat memory.
+- [ ] Add retrieval/answer-grounding evaluation for RAG.
+- [ ] Add a configured remote MCP client only when there is an MCP service to connect to.
+
+Do not add Kafka/Redis/multiple services merely to make the architecture diagram look distributed. Introduce external infrastructure only when a concrete workflow requires it.
 
 ## Security notes
 
