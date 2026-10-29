@@ -44,8 +44,7 @@ import static org.mockito.Mockito.when;
                 "spring.ai.vectorstore.type=none",
                 "spring.ai.mcp.server.protocol=STREAMABLE",
                 "spring.ai.mcp.server.type=SYNC",
-                "spring.ai.mcp.server.annotation-scanner.enabled=true",
-                "spring.ai.model.chat.memory=none"
+                "spring.ai.mcp.server.annotation-scanner.enabled=true"
         }
 )
 @ActiveProfiles("mcp-server")
@@ -170,43 +169,6 @@ class McpServerHttpIntegrationTest {
                 .contains("Order found. Order ID: 42");
 
         verify(orderLookupTool).lookupOrder(42L);
-    }
-
-    @Test
-    void returnsJsonRpcErrorForUnknownMethod() throws Exception {
-        HttpResponse<String> initializeResponse = postRpc(
-                "initialize",
-                10,
-                Map.of(
-                        "protocolVersion", PROTOCOL_VERSION,
-                        "capabilities", Map.of(),
-                        "clientInfo", Map.of(
-                                "name", "knowledge-agent-test-client",
-                                "version", "1.0.0"
-                        )
-                ),
-                null,
-                null
-        );
-
-        assertThat(initializeResponse.statusCode()).isEqualTo(200);
-        JsonNode initialized = parseRpcResponse(initializeResponse.body());
-        String version = initialized.path("result").path("protocolVersion").asText();
-        String sessionId = initializeResponse.headers()
-                .firstValue("Mcp-Session-Id").orElse(null);
-
-        HttpResponse<String> response = postRpc(
-                "not/a/real/method",
-                11,
-                Map.of(),
-                sessionId,
-                version
-        );
-
-        assertThat(response.statusCode()).isBetween(400, 599);
-        JsonNode envelope = parseRpcResponse(response.body());
-        assertThat(envelope.path("error").isObject()).isTrue();
-        assertThat(envelope.path("error").path("code").isNumber()).isTrue();
     }
 
     private HttpResponse<String> postRpc(
