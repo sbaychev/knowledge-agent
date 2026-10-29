@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -16,31 +17,51 @@ public class AgentExecutionConfiguration {
             destroyMethod = "shutdown"
     )
     public ThreadPoolExecutor agentExecutionExecutor(
-            @Value("${agent.execution.max-concurrent-requests:8}")
-            int maxConcurrentRequests,
-            @Value("${agent.execution.queue-capacity:16}")
-            int queueCapacity
+            @Value("${agent.execution.pool.core-size:4}")
+            int coreSize,
+            @Value("${agent.execution.pool.max-size:8}")
+            int maxSize,
+            @Value("${agent.execution.pool.queue-capacity:16}")
+            int queueCapacity,
+            @Value("${agent.execution.pool.keep-alive:60s}")
+            Duration keepAlive
     ) {
 
-        if (maxConcurrentRequests < 1) {
+        if (coreSize < 1) {
 
             throw new IllegalArgumentException(
-                    "max-concurrent-requests must be positive."
+                    "agent.execution.pool.core-size must be positive."
+            );
+        }
+
+        if (maxSize < coreSize) {
+
+            throw new IllegalArgumentException(
+                    "agent.execution.pool.max-size must be >= core-size."
             );
         }
 
         if (queueCapacity < 1) {
 
             throw new IllegalArgumentException(
-                    "queue-capacity must be positive."
+                    "agent.execution.pool.queue-capacity must be positive."
+            );
+        }
+
+        if (keepAlive == null
+                || keepAlive.isZero()
+                || keepAlive.isNegative()) {
+
+            throw new IllegalArgumentException(
+                    "agent.execution.pool.keep-alive must be positive."
             );
         }
 
         return new ThreadPoolExecutor(
-                maxConcurrentRequests,
-                maxConcurrentRequests,
-                0L,
-                TimeUnit.MILLISECONDS,
+                coreSize,
+                maxSize,
+                keepAlive.toNanos(),
+                TimeUnit.NANOSECONDS,
                 new ArrayBlockingQueue<>(queueCapacity),
                 Thread.ofPlatform()
                         .name("agent-execution-", 0)
