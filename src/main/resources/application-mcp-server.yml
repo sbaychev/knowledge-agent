@@ -9,5 +9,7 @@ spring:
         annotation-scanner:
           enabled: true
 
+# Loopback by default is suitable for local development. Explicitly opt into
+# another bind address when running behind an authenticated/restricted network.
 server:
-  address: 127.0.0.1
+  address: ${MCP_SERVER_BIND_ADDRESS:127.0.0.1}

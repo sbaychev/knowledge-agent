@@ -5,8 +5,8 @@ spring:
 
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/knowledge_agent}
-    username: ${SPRING_DATASOURCE_USERNAME:knowledge_agent}
-    password: ${SPRING_DATASOURCE_PASSWORD:knowledge_agent}
+    username: ${SPRING_DATASOURCE_USERNAME:knowledge}
+    password: ${SPRING_DATASOURCE_PASSWORD:knowledge}
 
   jpa:
     open-in-view: false

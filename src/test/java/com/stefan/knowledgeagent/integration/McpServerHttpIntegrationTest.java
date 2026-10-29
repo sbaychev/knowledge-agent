@@ -31,8 +31,10 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @SpringBootTest(
@@ -66,13 +68,12 @@ class McpServerHttpIntegrationTest {
     private OrderLookupTool orderLookupTool;
 
     @Test
-    void discoversAndInvokesOrderLookupThroughMcpHttp()
+    void exposesMcpToolsResourcesAndPromptsAndRejectsInvalidInputs()
             throws Exception {
 
         when(orderLookupTool.lookupOrder(42L))
                 .thenReturn("Order found. Order ID: 42");
 
-        // 1. Initialize the MCP session.
         HttpResponse<String> initializeResponse = postRpc(
                 "initialize",
                 1,
@@ -88,11 +89,16 @@ class McpServerHttpIntegrationTest {
                 null
         );
 
-        assertThat(initializeResponse.statusCode()).isEqualTo(200);
+        assertThat(initializeResponse.statusCode())
+                .as("MCP initialize response: %s", initializeResponse.body())
+                .isEqualTo(200);
 
-        JsonNode initializeResult =
-                parseRpcResponse(initializeResponse.body())
-                        .path("result");
+        JsonNode initializeEnvelope =
+                parseRpcResponse(initializeResponse.body());
+
+        assertThat(initializeEnvelope.path("error").isMissingNode()).isTrue();
+
+        JsonNode initializeResult = initializeEnvelope.path("result");
 
         assertThat(initializeResult.path("protocolVersion").asText())
                 .isNotBlank();
@@ -104,7 +110,6 @@ class McpServerHttpIntegrationTest {
                 .firstValue("Mcp-Session-Id")
                 .orElse(null);
 
-        // 2. Complete the MCP initialization handshake.
         HttpResponse<String> initializedResponse = postRpc(
                 "notifications/initialized",
                 null,
@@ -114,9 +119,9 @@ class McpServerHttpIntegrationTest {
         );
 
         assertThat(initializedResponse.statusCode())
+                .as("MCP initialized notification: %s", initializedResponse.body())
                 .isIn(200, 202, 204);
 
-        // 3. Discover the tools actually exposed by the server.
         HttpResponse<String> listResponse = postRpc(
                 "tools/list",
                 2,
@@ -125,20 +130,19 @@ class McpServerHttpIntegrationTest {
                 negotiatedProtocolVersion
         );
 
-        assertThat(listResponse.statusCode()).isEqualTo(200);
+        assertThat(listResponse.statusCode())
+                .as("MCP tools/list response: %s", listResponse.body())
+                .isEqualTo(200);
 
-        JsonNode listResult =
-                parseRpcResponse(listResponse.body());
+        JsonNode listEnvelope = parseRpcResponse(listResponse.body());
 
-        assertThat(listResult.path("error").isMissingNode()).isTrue();
+        assertThat(listEnvelope.path("error").isMissingNode()).isTrue();
 
         List<String> toolNames = new ArrayList<>();
 
-        listResult.path("result")
-                .path("tools")
-                .forEach(tool ->
-                        toolNames.add(tool.path("name").asText())
-                );
+        listEnvelope.path("result").path("tools").forEach(tool ->
+                toolNames.add(tool.path("name").asText())
+        );
 
         assertThat(toolNames).containsExactlyInAnyOrder(
                 "lookup_order",
@@ -147,7 +151,6 @@ class McpServerHttpIntegrationTest {
                 "lookup_refunds_by_order"
         );
 
-        // 4. Invoke a discovered tool through the MCP protocol.
         HttpResponse<String> callResponse = postRpc(
                 "tools/call",
                 3,
@@ -159,20 +162,185 @@ class McpServerHttpIntegrationTest {
                 negotiatedProtocolVersion
         );
 
-        assertThat(callResponse.statusCode()).isEqualTo(200);
+        assertThat(callResponse.statusCode())
+                .as("MCP tools/call response: %s", callResponse.body())
+                .isEqualTo(200);
 
-        JsonNode callResult =
-                parseRpcResponse(callResponse.body());
+        JsonNode callEnvelope = parseRpcResponse(callResponse.body());
 
-        assertThat(callResult.path("error").isMissingNode()).isTrue();
+        assertThat(callEnvelope.path("error").isMissingNode()).isTrue();
 
-        JsonNode result = callResult.path("result");
+        JsonNode result = callEnvelope.path("result");
 
         assertThat(result.path("isError").asBoolean(false)).isFalse();
         assertThat(result.path("content").get(0).path("text").asText())
                 .contains("Order found. Order ID: 42");
 
         verify(orderLookupTool).lookupOrder(42L);
+
+        // 5. Discover the policy catalog resource separately from executable tools.
+        HttpResponse<String> resourcesResponse = postRpc(
+                "resources/list",
+                4,
+                Map.of(),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(resourcesResponse.statusCode())
+                .as("MCP resources/list response: %s", resourcesResponse.body())
+                .isEqualTo(200);
+
+        JsonNode resourcesEnvelope = parseRpcResponse(resourcesResponse.body());
+
+        assertThat(resourcesEnvelope.path("error").isMissingNode()).isTrue();
+        assertThat(resourcesEnvelope.path("result").path("resources").toString())
+                .contains("knowledge://policies");
+
+        // 6. Discover the allow-listed resource template and read a real classpath document.
+        HttpResponse<String> templatesResponse = postRpc(
+                "resources/templates/list",
+                5,
+                Map.of(),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(templatesResponse.statusCode())
+                .as("MCP resources/templates/list response: %s", templatesResponse.body())
+                .isEqualTo(200);
+
+        JsonNode templatesEnvelope = parseRpcResponse(templatesResponse.body());
+
+        assertThat(templatesEnvelope.path("error").isMissingNode()).isTrue();
+        assertThat(templatesEnvelope.path("result").path("resourceTemplates").toString())
+                .contains("knowledge://policy/{policyId}");
+
+        HttpResponse<String> refundPolicyResponse = postRpc(
+                "resources/read",
+                6,
+                Map.of("uri", "knowledge://policy/refund-policy"),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(refundPolicyResponse.statusCode())
+                .as("MCP resources/read response: %s", refundPolicyResponse.body())
+                .isEqualTo(200);
+
+        JsonNode refundPolicyEnvelope = parseRpcResponse(refundPolicyResponse.body());
+
+        assertThat(refundPolicyEnvelope.path("error").isMissingNode()).isTrue();
+
+        String refundPolicyText = refundPolicyEnvelope.path("result")
+                .path("contents").get(0).path("text").asText();
+
+        assertThat(refundPolicyText)
+                .contains("# Refund Policy")
+                .contains("30 calendar days")
+                .contains("demonstration policy content");
+
+        // 7. Discover the reusable order-investigation prompt.
+        HttpResponse<String> promptsResponse = postRpc(
+                "prompts/list",
+                7,
+                Map.of(),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(promptsResponse.statusCode())
+                .as("MCP prompts/list response: %s", promptsResponse.body())
+                .isEqualTo(200);
+
+        JsonNode promptsEnvelope = parseRpcResponse(promptsResponse.body());
+
+        assertThat(promptsEnvelope.path("error").isMissingNode()).isTrue();
+        assertThat(promptsEnvelope.path("result").path("prompts").toString())
+                .contains("investigate-order");
+
+        HttpResponse<String> promptResponse = postRpc(
+                "prompts/get",
+                8,
+                Map.of(
+                        "name", "investigate-order",
+                        "arguments", Map.of("orderId", "42")
+                ),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(promptResponse.statusCode())
+                .as("MCP prompts/get response: %s", promptResponse.body())
+                .isEqualTo(200);
+
+        JsonNode promptEnvelope = parseRpcResponse(promptResponse.body());
+
+        assertThat(promptEnvelope.path("error").isMissingNode()).isTrue();
+        String promptText = promptEnvelope.path("result")
+                .path("messages").get(0).path("content").path("text").asText();
+
+        assertThat(promptText)
+                .contains("Investigate order 42")
+                .contains("lookup_order")
+                .contains("Do not create, cancel, dispatch, deliver, charge, or refund");
+
+        // Invalid resource IDs must not be resolved to arbitrary classpath files.
+        HttpResponse<String> invalidPolicyResponse = postRpc(
+                "resources/read",
+                9,
+                Map.of("uri", "knowledge://policy/not-allow-listed"),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(invalidPolicyResponse.statusCode())
+                .as("MCP resources/read with an unknown policy ID: %s",
+                        invalidPolicyResponse.body())
+                .isEqualTo(200);
+
+        JsonNode invalidPolicyEnvelope =
+                parseRpcResponse(invalidPolicyResponse.body());
+
+        assertThat(invalidPolicyEnvelope.path("error").isMissingNode())
+                .as("Unknown policy IDs must be returned as an MCP protocol error")
+                .isFalse();
+
+        // Malformed arguments must fail before invoking the application-owned tool.
+        clearInvocations(orderLookupTool);
+
+        HttpResponse<String> malformedArgumentsResponse = postRpc(
+                "tools/call",
+                10,
+                Map.of(
+                        "name", "lookup_order",
+                        "arguments", Map.of("orderId", "not-a-number")
+                ),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(malformedArgumentsResponse.statusCode())
+                .as("MCP tools/call with a malformed order ID: %s",
+                        malformedArgumentsResponse.body())
+                .isEqualTo(200);
+
+        JsonNode malformedArgumentsEnvelope =
+                parseRpcResponse(malformedArgumentsResponse.body());
+
+        boolean rejectedAsRpcError =
+                !malformedArgumentsEnvelope.path("error").isMissingNode();
+
+        boolean rejectedAsToolError =
+                malformedArgumentsEnvelope.path("result")
+                        .path("isError")
+                        .asBoolean(false);
+
+        assertThat(rejectedAsRpcError || rejectedAsToolError)
+                .as("Malformed tool arguments must be rejected by the MCP server")
+                .isTrue();
+
+        verifyNoInteractions(orderLookupTool);
     }
 
     private HttpResponse<String> postRpc(
@@ -184,6 +352,7 @@ class McpServerHttpIntegrationTest {
     ) throws Exception {
 
         Map<String, Object> payload = new LinkedHashMap<>();
+
         payload.put("jsonrpc", "2.0");
 
         if (id != null) {
@@ -220,30 +389,35 @@ class McpServerHttpIntegrationTest {
     }
 
     private JsonNode parseRpcResponse(String body) throws Exception {
+
         String normalized = body.strip();
 
-        // Streamable HTTP can carry a JSON-RPC response as an SSE event.
-        if (normalized.startsWith("event:")
-                || normalized.contains("\ndata:")) {
+        if (normalized.startsWith("event:") || normalized.contains("\ndata:")) {
 
             for (String line : normalized.split("\\R")) {
+
                 if (line.startsWith("data:")) {
+
                     return objectMapper.readTree(
                             line.substring("data:".length()).strip()
                     );
                 }
             }
         }
-
         return objectMapper.readTree(normalized);
     }
 
     @SpringBootConfiguration
-    @EnableAutoConfiguration(exclude = {
-            DataSourceAutoConfiguration.class,
-            HibernateJpaAutoConfiguration.class,
-            FlywayAutoConfiguration.class
-    })
+    @EnableAutoConfiguration(
+            exclude = {
+                    DataSourceAutoConfiguration.class,
+                    HibernateJpaAutoConfiguration.class,
+                    FlywayAutoConfiguration.class
+            },
+            excludeName = {
+                    "org.springframework.ai.model.chat.memory.repository.jdbc.autoconfigure.JdbcChatMemoryRepositoryAutoConfiguration"
+            }
+    )
     @ComponentScan(basePackageClasses = OrderSupportMcpTools.class)
     static class McpTestApplication {
 
