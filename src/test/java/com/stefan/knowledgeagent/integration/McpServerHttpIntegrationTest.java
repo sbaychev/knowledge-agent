@@ -169,6 +169,107 @@ class McpServerHttpIntegrationTest {
                 .contains("Order found. Order ID: 42");
 
         verify(orderLookupTool).lookupOrder(42L);
+
+        // 5. Discover the policy catalog resource separately from executable tools.
+        HttpResponse<String> resourcesResponse = postRpc(
+                "resources/list",
+                4,
+                Map.of(),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(resourcesResponse.statusCode())
+                .as("MCP resources/list response: %s", resourcesResponse.body())
+                .isEqualTo(200);
+
+        JsonNode resourcesEnvelope = parseRpcResponse(resourcesResponse.body());
+        assertThat(resourcesEnvelope.path("error").isMissingNode()).isTrue();
+        assertThat(resourcesEnvelope.path("result").path("resources").toString())
+                .contains("knowledge://policies");
+
+        // 6. Discover the allow-listed resource template and read a real classpath document.
+        HttpResponse<String> templatesResponse = postRpc(
+                "resources/templates/list",
+                5,
+                Map.of(),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(templatesResponse.statusCode())
+                .as("MCP resources/templates/list response: %s", templatesResponse.body())
+                .isEqualTo(200);
+
+        JsonNode templatesEnvelope = parseRpcResponse(templatesResponse.body());
+        assertThat(templatesEnvelope.path("error").isMissingNode()).isTrue();
+        assertThat(templatesEnvelope.path("result").path("resourceTemplates").toString())
+                .contains("knowledge://policy/{policyId}");
+
+        HttpResponse<String> refundPolicyResponse = postRpc(
+                "resources/read",
+                6,
+                Map.of("uri", "knowledge://policy/refund-policy"),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(refundPolicyResponse.statusCode())
+                .as("MCP resources/read response: %s", refundPolicyResponse.body())
+                .isEqualTo(200);
+
+        JsonNode refundPolicyEnvelope = parseRpcResponse(refundPolicyResponse.body());
+        assertThat(refundPolicyEnvelope.path("error").isMissingNode()).isTrue();
+        String refundPolicyText = refundPolicyEnvelope.path("result")
+                .path("contents").get(0).path("text").asText();
+
+        assertThat(refundPolicyText)
+                .contains("# Refund Policy")
+                .contains("30 calendar days")
+                .contains("demonstration policy content");
+
+        // 7. Discover the reusable order-investigation prompt.
+        HttpResponse<String> promptsResponse = postRpc(
+                "prompts/list",
+                7,
+                Map.of(),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(promptsResponse.statusCode())
+                .as("MCP prompts/list response: %s", promptsResponse.body())
+                .isEqualTo(200);
+
+        JsonNode promptsEnvelope = parseRpcResponse(promptsResponse.body());
+        assertThat(promptsEnvelope.path("error").isMissingNode()).isTrue();
+        assertThat(promptsEnvelope.path("result").path("prompts").toString())
+                .contains("investigate-order");
+
+        HttpResponse<String> promptResponse = postRpc(
+                "prompts/get",
+                8,
+                Map.of(
+                        "name", "investigate-order",
+                        "arguments", Map.of("orderId", "42")
+                ),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(promptResponse.statusCode())
+                .as("MCP prompts/get response: %s", promptResponse.body())
+                .isEqualTo(200);
+
+        JsonNode promptEnvelope = parseRpcResponse(promptResponse.body());
+        assertThat(promptEnvelope.path("error").isMissingNode()).isTrue();
+        String promptText = promptEnvelope.path("result")
+                .path("messages").get(0).path("content").path("text").asText();
+
+        assertThat(promptText)
+                .contains("Investigate order 42")
+                .contains("lookup_order")
+                .contains("Do not create, cancel, dispatch, deliver, charge, or refund");
     }
 
     private HttpResponse<String> postRpc(
