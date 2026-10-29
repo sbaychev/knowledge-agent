@@ -214,6 +214,28 @@ Do not commit actual credentials or secrets. `application-local.yml` should cont
 ### 4. Start the service
 
 
+```bash
+mvn spring-boot:run
+```
+
+Check application health and render the JSON response clearly:
+
+```bash
+curl -sS http://localhost:8080/actuator/health \
+  | jq '.' \
+  | glow -
+```
+
+Build and run the tests:
+
+```bash
+set -o pipefail
+mvn clean verify 2>&1 | glow -
+```
+
+Integration tests that use Testcontainers require Docker to be available. Resolve compiler errors, failing tests, or context-startup failures before pushing; a successful compilation alone does not prove that integration tests are green.
+
+
 ### 5. Start the MCP server (optional)
 
 The MCP server is enabled through the mcp-server Spring profile. It uses the same application and database; it is not a separate microservice. Ensure the local database and the local chat-provider settings from the previous step are available, then run:
@@ -244,26 +266,6 @@ bash scripts/verify.sh
 
 MCP is a protocol adapter, not authentication or authorization by itself. Keep the default loopback bind unless you have deliberately configured network access, identity and authorization.
 
-```bash
-mvn spring-boot:run
-```
-
-Check application health and render the JSON response clearly:
-
-```bash
-curl -sS http://localhost:8080/actuator/health \
-  | jq '.' \
-  | glow -
-```
-
-Build and run the tests:
-
-```bash
-set -o pipefail
-mvn clean verify 2>&1 | glow -
-```
-
-Integration tests that use Testcontainers require Docker to be available. Resolve compiler errors, failing tests, or context-startup failures before pushing; a successful compilation alone does not prove that integration tests are green.
 
 ## API overview
 
@@ -566,16 +568,13 @@ More detail, including the boundary each test proves and common failure modes, i
 Run it from the repository root after starting PostgreSQL and the Spring Boot application with the local LLM provider configured:
 
 ```bash
-chmod +x scripts/evaluate-agent.sh
-set -o pipefail
-./scripts/evaluate-agent.sh 2>&1 | glow -
+bash scripts/evaluate-agent.sh
 ```
 
 To use a different application URL or increase the request timeout:
 
 ```bash
-BASE_URL=http://localhost:8080 REQUEST_TIMEOUT_SECONDS=120 \\
-  ./scripts/evaluate-agent.sh 2>&1 | glow -
+BASE_URL=http://localhost:8080 REQUEST_TIMEOUT_SECONDS=120 bash scripts/evaluate-agent.sh
 ```
 
 The script makes real LLM requests and may consume provider capacity. It is a development/acceptance check, not a deterministic unit test. Keep the scripted `ChatModel` tests for deterministic tool-calling and CI validation. The script exits non-zero if an expected fact is missing or an API request fails. It prints each Markdown answer with `glow` and the final evaluation report as pretty JSON through `jq` and `glow`.
