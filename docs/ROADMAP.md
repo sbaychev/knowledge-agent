@@ -78,20 +78,30 @@ Keep the terms distinct:
 - **Knowledge** is the external/versioned corpus, not the conversation transcript.
 - **Audit history** records what the system actually did.
 
-## Milestone 4 - durable execution and audit trail
+## Milestone 4 — durable execution and audit trail
 
-**Status: not implemented**
+**Status: initial lifecycle persistence implemented; detailed events pending**
 
-Add this before allowing long-running or human-approved operations.
+- [x] Introduce `AgentExecution` with a stable ID, conversation ID,
+  lifecycle status, start/end timestamps and normalized failure code.
+- [x] Persist ordered start and terminal lifecycle events in PostgreSQL.
+- [x] Expose the execution ID in the agent chat response.
+- [x] Link execution records to conversations and HTTP correlation IDs.
+- [x] Version event payloads and reject invalid lifecycle transitions.
+- [x] Add PostgreSQL integration tests for successful and failed executions.
+- [ ] Add model invocation events with bounded, non-sensitive metadata.
+- [ ] Add tool invocation events with tool name, outcome and duration.
+- [ ] Persist validation results and policy decisions when those stages
+  are implemented.
+- [ ] Define idempotent execution resume semantics before human approval.
+- [ ] Recover or explicitly reconcile executions left `RUNNING` after
+  process restart.
+- [ ] Define retention and deletion rules for executions and their events.
 
-- [ ] Introduce AgentExecution with stable ID, conversation ID, status, start/end timestamps, iteration count and terminal reason.
-- [ ] Introduce ordered AgentExecutionEvent / AgentStep rows for model invocation, tool request, validation result, policy decision, approval wait/resume, tool result and final response.
-- [ ] Use a versioned event payload schema; do not persist secrets or unrestricted model payloads by default.
-- [ ] Correlate execution events with HTTP correlation ID and bounded metrics/traces.
-- [ ] Define idempotent resume behavior so duplicate resume messages cannot execute a pending operation twice.
-- [ ] Recover executions left RUNNING after a process restart.
-
-Do not reconstruct audit history later from chat text. Model answers summarize events; they are not a substitute for event records.
+The current implementation captures the outer execution lifecycle only.
+It does not yet provide a complete audit trail of the model/tool loop.
+Do not enable agent-driven mutations on the assumption that this
+lifecycle record alone proves which business actions took place.
 
 ## Milestone 5 - policy and human approval for mutations
 

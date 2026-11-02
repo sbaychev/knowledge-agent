@@ -76,6 +76,39 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the request flow, context/m
 
 **Memory persistence boundary:** bounded chat-memory messages are stored in PostgreSQL and survive application restarts. Closing a conversation clears its stored memory. Spring AI 2.0.1 `JdbcChatMemoryRepository` filters assistant messages containing tool calls and `ToolResponseMessage` records, so this is contextual memory, not a complete audit transcript of every model/tool exchange. If full tool-call replay or an immutable audit history is required, implement a separate conversation event/history store rather than relying on `ChatMemoryRepository`.
 
+### Durable agent execution lifecycle
+
+Every accepted `POST /api/v1/agent/chat` request creates a durable
+agent execution linked to its conversation.
+
+The response contains:
+- `conversationId`: the conversation used for contextual memory;
+- `executionId`: the identifier of this individual execution;
+- `answer`: the response returned by the agent.
+
+The execution lifecycle is persisted in PostgreSQL:
+
+- `agent_executions` stores the current execution status, correlation ID,
+  start/completion timestamps, duration and normalized failure code.
+- `agent_execution_events` stores ordered lifecycle events with a
+  versioned JSON payload.
+
+The initial lifecycle event types are:
+`EXECUTION_STARTED`, `EXECUTION_SUCCEEDED`, `EXECUTION_FAILED`,
+`EXECUTION_TIMED_OUT`, and `EXECUTION_REJECTED`.
+
+The event store currently records lifecycle transitions, not every
+model invocation or individual tool call. It is not yet a complete
+audit transcript and must not be treated as one.
+
+Raw prompts, final answers, tool arguments, exception messages and
+stack traces are not included in the lifecycle event payloads.
+Correlation IDs are metadata for diagnosis, not an authorization
+mechanism.
+
+Long-running execution recovery, model/tool-level events, authenticated
+execution ownership and retention/deletion policy remain separate work.
+
 ## Technology stack
 
 - Java 25
@@ -342,7 +375,8 @@ The response envelope has this shape (the answer below is illustrative; natural-
 
 ```json
 {
-  "conversationId": "<generated-uuid>",
+  "conversationId": "<generated-conversation-uuid>",
+  "executionId": "<generated-execution-uuid>",
   "answer": "Markdown answer returned by the agent"
 }
 ```

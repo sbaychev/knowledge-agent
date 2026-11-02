@@ -85,18 +85,41 @@ send_payload() {
 rpc() {
   local method="$1"
   local request_id="$2"
-  local params_json="${3:-{}}"
+  local params_json="${3-}"
   local payload
 
+  # JSON-RPC methods expect an object for params.
+  if [[ -z "$params_json" ]]; then
+    params_json='{}'
+  fi
+
+  if ! printf '%s' "$params_json" |
+      jq -e 'type == "object"' >/dev/null 2>&1; then
+    fail "Invalid params JSON for MCP method '$method': $(printf '%q' "$params_json")"
+  fi
+
   if [[ -n "$request_id" ]]; then
+    # Accept numeric or string JSON-RPC identifiers.
+    if ! printf '%s' "$request_id" |
+        jq -e 'type == "number" or type == "string"' >/dev/null 2>&1; then
+      fail "Invalid JSON-RPC request ID for '$method': $(printf '%q' "$request_id")"
+    fi
+
     payload="$(jq -cn \
       --arg method "$method" \
       --argjson id "$request_id" \
       --argjson params "$params_json" \
-      '{jsonrpc:"2.0", id:$id, method:$method, params:$params}')"
+      '{
+        jsonrpc: "2.0",
+        id: $id,
+        method: $method,
+        params: $params
+      }')"
   else
-    # MCP notifications intentionally have no JSON-RPC id and no response body.
-    payload="$(jq -cn --arg method "$method" '{jsonrpc:"2.0", method:$method}')"
+    # MCP notifications intentionally have no JSON-RPC ID.
+    payload="$(jq -cn \
+      --arg method "$method" \
+      '{jsonrpc:"2.0", method:$method}')"
   fi
 
   send_payload "$payload"
@@ -160,6 +183,9 @@ NEGOTIATED_VERSION="$(printf '%s' "$INITIALIZE_JSON" | jq -er '.result.protocolV
   || fail 'initialize did not negotiate a protocol version.'
 pass "initialize negotiated protocol $NEGOTIATED_VERSION"
 
+printf '%s\n' "$INITIALIZE_JSON" |
+  jq '.result.capabilities'
+
 # 2. Finish the handshake. Notifications have no JSON-RPC id.
 rpc notifications/initialized '' '{}'
 [[ "$RPC_STATUS" == 200 || "$RPC_STATUS" == 202 || "$RPC_STATUS" == 204 ]] \
@@ -184,12 +210,26 @@ pass 'tools/list publishes all four read-only transactional tools'
 # 4. Execute a real tool call. Order 1 is the repository's deterministic seed order.
 rpc tools/call 3 "$(jq -cn '{name:"lookup_order", arguments:{orderId:1}}')"
 assert_status 200 'tools/call lookup_order'
+
 ORDER_JSON="$(assert_rpc_result 'tools/call lookup_order')"
+
 printf '%s' "$ORDER_JSON" | jq -e '.result.isError != true' >/dev/null \
   || fail 'lookup_order returned isError=true.'
-ORDER_TEXT="$(printf '%s' "$ORDER_JSON" | jq -er '.result.content[]? | select(.type == "text") | .text' | head -n 1)"
-printf '%s' "$ORDER_TEXT" | grep -Eiq 'Order ID:[[:space:]]*1' \
-  || fail 'lookup_order response did not identify seeded order 1.'
+
+# Extract the complete text, preserving all newlines.
+# Default to an empty string so set -u can never see an unset variable.
+ORDER_TEXT="$(printf '%s' "$ORDER_JSON" | jq -r '
+  ([.result.content[]? | select(.type == "text") | .text] | first) // ""
+')"
+
+if [[ -z "$ORDER_TEXT" ]]; then
+  fail 'lookup_order returned no text content.'
+fi
+
+if ! grep -Fq 'Order ID: 1' <<< "$ORDER_TEXT"; then
+  fail 'lookup_order response did not identify seeded order 1.'
+fi
+
 pass 'tools/call executes lookup_order over HTTP and returns order 1'
 
 # 4a. A malformed argument must be rejected rather than passed to the tool.
@@ -221,9 +261,26 @@ pass 'resources/templates/list publishes the allow-listed policy template'
 rpc resources/read 6 "$(jq -cn '{uri:"knowledge://policy/refund-policy"}')"
 assert_status 200 'resources/read refund-policy'
 POLICY_JSON="$(assert_rpc_result 'resources/read refund-policy')"
-POLICY_TEXT="$(printf '%s' "$POLICY_JSON" | jq -er '.result.contents[]? | select(.uri == "knowledge://policy/refund-policy") | .text' | head -n 1)"
-printf '%s' "$POLICY_TEXT" | grep -Fq '# Refund Policy' || fail 'Refund Policy resource content is missing its heading.'
-printf '%s' "$POLICY_TEXT" | grep -Eiq '30 calendar days' || fail 'Refund Policy resource content did not include the documented return window.'
+
+POLICY_TEXT="$(
+  printf '%s' "$POLICY_JSON" | jq -r '
+    [
+      .result.contents[]?
+      | select(.uri == "knowledge://policy/refund-policy")
+      | .text
+    ][0] // empty
+  '
+)"
+
+[[ -n "$POLICY_TEXT" ]] \
+  || fail 'Refund Policy resource returned no text content.'
+
+printf '%s' "$POLICY_TEXT" | grep -Fq '# Refund Policy' \
+  || fail 'Refund Policy resource content is missing its heading.'
+
+printf '%s' "$POLICY_TEXT" | grep -Eiq '30 calendar days' \
+  || fail 'Refund Policy resource content did not include the documented return window.'
+
 pass 'resources/read serves the Refund Policy Markdown from the classpath'
 
 # 6a. The URI template must not allow an unlisted resource identifier.
@@ -246,8 +303,24 @@ pass 'prompts/list publishes investigate-order'
 rpc prompts/get 12 "$(jq -cn '{name:"investigate-order", arguments:{orderId:"1"}}')"
 assert_status 200 'prompts/get investigate-order'
 PROMPT_JSON="$(assert_rpc_result 'prompts/get investigate-order')"
-PROMPT_TEXT="$(printf '%s' "$PROMPT_JSON" | jq -er '.result.messages[]? | .content.text' | head -n 1)"
-printf '%s' "$PROMPT_TEXT" | grep -Fq 'Investigate order 1' || fail 'investigate-order prompt did not resolve order ID.'
+
+PROMPT_TEXT="$(
+  printf '%s' "$PROMPT_JSON" | jq -r '
+    [
+      .result.messages[]?.content?
+      | select(.type == "text")
+      | .text
+    ][0] // empty
+  '
+)"
+
+[[ -n "$PROMPT_TEXT" ]] \
+  || fail 'investigate-order prompt returned no text content.'
+
+printf '%s' "$PROMPT_TEXT" | grep -Fq 'Investigate order 1' \
+  || fail 'investigate-order prompt did not resolve order ID.'
+
+pass 'prompts/get returns the parameterized investigate-order prompt'
 printf '%s' "$PROMPT_TEXT" | grep -Fq 'lookup_order' || fail 'investigate-order prompt omitted lookup instructions.'
 printf '%s' "$PROMPT_TEXT" | grep -Fq 'Do not create, cancel, dispatch, deliver, charge, or refund' \
   || fail 'investigate-order prompt omitted its read-only constraints.'

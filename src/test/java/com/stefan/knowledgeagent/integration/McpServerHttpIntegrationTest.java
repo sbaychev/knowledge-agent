@@ -3,11 +3,14 @@ package com.stefan.knowledgeagent.integration;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.stefan.knowledgeagent.mcp.OrderSupportMcpTools;
+import com.stefan.knowledgeagent.mcp.SupportPolicyMcpResources;
 import com.stefan.knowledgeagent.tools.OrderLookupTool;
 import com.stefan.knowledgeagent.tools.PaymentLookupTool;
 import com.stefan.knowledgeagent.tools.RefundLookupTool;
 import com.stefan.knowledgeagent.tools.ShipmentLookupTool;
 import org.junit.jupiter.api.Test;
+import org.springframework.ai.mcp.annotation.McpResource;
+import org.springframework.ai.mcp.server.common.autoconfigure.annotations.McpServerAnnotationScannerAutoConfiguration;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.SpringBootConfiguration;
 import org.springframework.boot.autoconfigure.EnableAutoConfiguration;
@@ -66,6 +69,24 @@ class McpServerHttpIntegrationTest {
 
     @Autowired
     private OrderLookupTool orderLookupTool;
+
+    @Autowired
+    private SupportPolicyMcpResources supportPolicyMcpResources;
+
+    @Autowired
+    private McpServerAnnotationScannerAutoConfiguration.ServerMcpAnnotatedBeans annotatedBeans;
+
+    @Test
+    void registersPolicyResourcesWithMcpAnnotationScanner() {
+
+        assertThat(supportPolicyMcpResources)
+                .as("Policy resource component must exist in Spring context")
+                .isNotNull();
+
+        assertThat(annotatedBeans.getBeansByAnnotation(McpResource.class))
+                .as("MCP annotation scanner must discover SupportPolicyMcpResources")
+                .contains(supportPolicyMcpResources);
+    }
 
     @Test
     void exposesMcpToolsResourcesAndPromptsAndRejectsInvalidInputs()
@@ -284,6 +305,50 @@ class McpServerHttpIntegrationTest {
                 .contains("Investigate order 42")
                 .contains("lookup_order")
                 .contains("Do not create, cancel, dispatch, deliver, charge, or refund");
+
+        // A valid MCP tool call for a missing order is a business-level result,
+// not a protocol error.
+        when(orderLookupTool.lookupOrder(404L))
+                .thenReturn(
+                        "ORDER_NOT_FOUND: No order exists with ID 404."
+                );
+
+        HttpResponse<String> missingOrderResponse = postRpc(
+                "tools/call",
+                13,
+                Map.of(
+                        "name", "lookup_order",
+                        "arguments", Map.of("orderId", 404L)
+                ),
+                sessionId,
+                negotiatedProtocolVersion
+        );
+
+        assertThat(missingOrderResponse.statusCode())
+                .as("MCP lookup of a missing order: %s",
+                        missingOrderResponse.body())
+                .isEqualTo(200);
+
+        JsonNode missingOrderEnvelope =
+                parseRpcResponse(missingOrderResponse.body());
+
+        assertThat(missingOrderEnvelope.path("error").isMissingNode())
+                .isTrue();
+
+        JsonNode missingOrderResult =
+                missingOrderEnvelope.path("result");
+
+        assertThat(missingOrderResult.path("isError").asBoolean(false))
+                .isFalse();
+
+        assertThat(missingOrderResult.path("content").get(0).path("text").asText())
+                .contains("ORDER_NOT_FOUND")
+                .contains("404");
+
+        verify(orderLookupTool).lookupOrder(404L);
+
+// Isolate the following malformed-argument assertion.
+        clearInvocations(orderLookupTool);
 
         // Invalid resource IDs must not be resolved to arbitrary classpath files.
         HttpResponse<String> invalidPolicyResponse = postRpc(

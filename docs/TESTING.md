@@ -72,6 +72,38 @@ Spring Boot integration tests validate dependency wiring, HTTP routing, request/
 
 Database integration coverage should use real PostgreSQL when the test depends on PostgreSQL-specific behavior, migrations, JSON/vector columns, indexes or JDBC repository semantics. An in-memory substitute does not prove that Flyway and PostgreSQL agree.
 
+### Durable agent execution persistence
+
+`AgentChatApplicationServiceTest` verifies the orchestration contract
+without starting Spring or making real model calls.
+
+`AgentExecutionPersistenceIntegrationTest` verifies the persistence
+boundary against PostgreSQL using Testcontainers. It covers:
+
+- execution creation linked to an existing conversation;
+- successful and failed lifecycle transitions;
+- persistence and ordering of lifecycle events;
+- JSONB payload persistence;
+- rejection of duplicate terminal transitions;
+- absence of raw prompt/answer fields in the current event payload.
+
+Run the focused suite:
+
+~~~bash
+bash scripts/test-agent-execution.sh
+~~~
+
+This suite requires Docker for Testcontainers. It tests execution
+lifecycle persistence, not recovery after a process crash or complete
+model/tool-level auditability.
+
+Run the full CI-equivalent verification after changing entity mappings,
+Flyway migrations, controller response contracts or execution wiring:
+
+~~~bash
+bash scripts/verify.sh
+~~~
+
 ### Scripted model / tool-calling tests
 
 Use a scripted/fake ChatModel for agent tests that need to control returned tool calls and final answers. These tests should be deterministic, offline, and free of paid API usage. Cover multi-tool questions, tool result hand-off, unknown records, model failure, limit enforcement and final-answer handling.
