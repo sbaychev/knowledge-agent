@@ -79,9 +79,11 @@ public class SupportPolicyMcpResources {
             mimeType = "text/markdown"
     )
     public String readPolicy(String policyId) {
+
         String location = POLICY_RESOURCES.get(policyId);
 
         if (location == null) {
+
             throw new IllegalArgumentException(
                     "Unknown policy ID. Read knowledge://policies for the "
                             + "supported policy IDs."
@@ -91,8 +93,11 @@ public class SupportPolicyMcpResources {
         Resource resource = resourceLoader.getResource(location);
 
         try (var inputStream = resource.getInputStream()) {
+
             return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+
         } catch (IOException exception) {
+
             throw new IllegalStateException(
                     "Unable to read the configured policy resource: " + policyId,
                     exception
