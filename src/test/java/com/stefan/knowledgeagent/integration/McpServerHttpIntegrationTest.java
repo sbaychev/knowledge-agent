@@ -21,6 +21,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.ComponentScan;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
+import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.test.context.ActiveProfiles;
 
 import java.net.URI;
@@ -485,6 +488,17 @@ class McpServerHttpIntegrationTest {
     )
     @ComponentScan(basePackageClasses = OrderSupportMcpTools.class)
     static class McpTestApplication {
+
+        @Bean
+        SecurityFilterChain mcpTestSecurityFilterChain(HttpSecurity http) {
+            http
+                    .csrf(AbstractHttpConfigurer::disable)
+                    .authorizeHttpRequests(authorize -> authorize
+                            .anyRequest().permitAll()
+                    );
+
+            return http.build();
+        }
 
         @Bean
         OrderLookupTool orderLookupTool() {

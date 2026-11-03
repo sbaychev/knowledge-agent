@@ -61,6 +61,8 @@ agent:
 
   approval:
     enabled: true
+    refund:
+      expiration: ${REFUND_APPROVAL_EXPIRATION:PT24H}
 
 management:
   endpoints:

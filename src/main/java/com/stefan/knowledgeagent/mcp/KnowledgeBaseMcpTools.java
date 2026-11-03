@@ -12,10 +12,11 @@ public class KnowledgeBaseMcpTools {
 
     private final KnowledgeSearchTool knowledgeSearchTool;
 
-    public KnowledgeBaseMcpTools(
-            KnowledgeSearchTool knowledgeSearchTool
+    public KnowledgeBaseMcpTools(KnowledgeSearchTool knowledgeSearchTool
     ) {
+
         this.knowledgeSearchTool = knowledgeSearchTool;
+
     }
 
     @McpTool(

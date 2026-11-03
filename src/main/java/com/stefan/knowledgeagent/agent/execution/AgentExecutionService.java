@@ -119,6 +119,105 @@ public class AgentExecutionService {
         );
     }
 
+    @Transactional
+    public void recordToolCallStarted(
+            UUID executionId,
+            UUID toolCallId,
+            String toolName
+    ) {
+        appendToolCallEvent(
+                executionId,
+                AgentExecutionEventType.TOOL_CALL_STARTED,
+                toolCallId,
+                toolName,
+                null
+        );
+    }
+
+    @Transactional
+    public void recordToolCallSucceeded(
+            UUID executionId,
+            UUID toolCallId,
+            String toolName,
+            long durationMs
+    ) {
+        appendToolCallEvent(
+                executionId,
+                AgentExecutionEventType.TOOL_CALL_SUCCEEDED,
+                toolCallId,
+                toolName,
+                durationMs
+        );
+    }
+
+    @Transactional
+    public void recordToolCallFailed(
+            UUID executionId,
+            UUID toolCallId,
+            String toolName,
+            long durationMs
+    ) {
+
+        appendToolCallEvent(
+                executionId,
+                AgentExecutionEventType.TOOL_CALL_FAILED,
+                toolCallId,
+                toolName,
+                durationMs
+        );
+    }
+
+    private void appendToolCallEvent(
+            UUID executionId,
+            AgentExecutionEventType eventType,
+            UUID toolCallId,
+            String toolName,
+            Long durationMs
+    ) {
+
+        Objects.requireNonNull(executionId, "executionId");
+        Objects.requireNonNull(toolCallId, "toolCallId");
+
+        if (toolName == null
+                || !toolName.matches("[a-z][a-z0-9_]{0,63}")) {
+
+            throw new IllegalArgumentException("Invalid tool name.");
+
+        }
+
+        if (durationMs != null && durationMs < 0) {
+
+            throw new IllegalArgumentException("durationMs must not be negative.");
+
+        }
+
+        AgentExecution execution = executionRepository
+                .findLockedById(executionId)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "AGENT_EXECUTION_NOT_FOUND: ",
+                        executionId.toString()
+                ));
+
+        if (execution.getStatus() != AgentExecutionStatus.RUNNING) {
+
+            throw new IllegalStateException(
+                    "Cannot append tool event to terminal execution: "
+                            + execution.getStatus()
+            );
+        }
+
+        Map<String, Object> payload = new java.util.LinkedHashMap<>();
+
+        payload.put("toolCallId", toolCallId.toString());
+        payload.put("toolName", toolName);
+
+        if (durationMs != null) {
+            payload.put("durationMs", durationMs);
+        }
+
+        appendEvent(execution, eventType, payload);
+    }
+
     private void finish(
             UUID executionId,
             AgentExecutionStatus terminalStatus,

@@ -1,10 +1,10 @@
-# Knowledge Agent roadmap
+# Knowledge Agent Roadmap
 
 This roadmap distinguishes capabilities already present in the repository from the next architecture lessons. The end target remains the original Knowledge Nugget sequence: build a normal application first, then work about the agent plumbing one boundary at a time.
 
-The deployment shape remains a **single Spring Boot modular monolith** until an independently deployable process solves an actual requirement. Do not add Kafka, Redis or another service just because it is a commonly appearing pattern in agent architecture. PostgreSQL/pgvector and the bounded in-process executor are enough for the current scope. Working step by step, by pealing the different layers, rather than try to do it all at once, where it does not make sense to be putting boundaries on moving targets. 
+The deployment shape remains a **single Spring Boot modular monolith** until an independently deployable process solves an actual requirement. Not adding Kafka, Redis or another service just because it is a generally appearing pattern in agent architecture. PostgreSQL/pgvector and the bounded in-process executor are enough for the current scope. Working step by step, by pealing the different layers, rather than try to do it all at once, where it does not make sense to be putting boundaries on moving targets.
 
-Main is to use previous learned experience in building AI / complex solutions, where unless you have a base that works, complexity does not matter unless the ultimate item piece to reach.
+Main is to use previous learned experience in building AI / complex solutions, where unless you have a base that works, complexity does not matter unless it is needed.
 
 ## Milestone 0 - a real application before AI
 
@@ -105,19 +105,29 @@ lifecycle record alone proves which business actions took place.
 
 ## Milestone 5 - policy and human approval for mutations
 
-**Status: not implemented; must precede LLM mutation tools**
+**Status: first persisted refund-approval slice implemented; general policy engine and agent integration pending**
 
-The REST API has order/refund operations, but current agent-facing tools intentionally do not expose them. Keep that safety boundary until the following are available.
+The REST API has order/refund operations, but current agent-facing tools intentionally do not expose them. Keep that safety boundary. The refund-specific approval path below is a human-facing API workflow; it does not enable the model to issue a refund.
+
+
+The first implementation is intentionally refund-specific. It creates a pending approval and requires a distinct APPROVER identity before calling the existing RefundService. The resulting domain refund remains REQUESTED; approval does not claim that a payment provider has completed the refund. The old direct refund endpoint is disabled even for APPROVER callers, so it cannot bypass the four-eyes workflow. No agent-facing or MCP mutation tool is enabled by this milestone yet.
+
 
 - [ ] Define tool metadata with stable name, input schema, risk class, idempotency requirement and whether approval is required.
 - [ ] Validate tool arguments before execution, including schema and domain constraints.
-- [ ] Resolve an authenticated principal and enforce authorization separately from agent policy.
+- [x] Resolve authenticated AGENT and APPROVER principals for refund approvals; disable the legacy direct-refund bypass; keep authorization separate from agent policy.
+- [ ] Bind conversations and executions to an authenticated principal and tenant; enforce ownership on continuation and close.
 - [ ] Evaluate policy in application code; never let model text decide whether an operation is authorized.
 - [ ] Return a machine-readable decision and reason: ALLOW, DENY or REQUIRE_APPROVAL.
-- [ ] Persist an approval request with normalized argument snapshot, requestor, approver, expiry, status and audit timestamps.
-- [ ] On approval, revalidate current domain state and policy immediately before execution.
-- [ ] Require idempotency keys and deduplicate execution across retries, timeouts and resumes.
-- [ ] Test denied, expired, rejected, duplicate and concurrent approvals.
+- [x] Persist refund approval requests with immutable payment/amount/currency/reason data, requester, approver, expiry, status and timestamps.
+- [x] Persist ordered approval events in a separate append-only PostgreSQL event table with versioned JSONB payloads.
+- [ ] Generalize the approval aggregate to other mutation types only after their domain contracts are defined.
+- [x] On refund approval, revalidate refundable capacity through the existing locked RefundService transaction immediately before creating the refund request.
+- [ ] Add an explicit application policy evaluator with machine-readable ALLOW, DENY and REQUIRE_APPROVAL decisions.
+- [x] Require an idempotency key for approval creation and derive the downstream refund idempotency key from the approval ID.
+- [ ] Define idempotent resume and reconciliation semantics for asynchronous provider calls, process restarts and ambiguous timeouts.
+- [x] Test role denial, self-approval denial, expiry, rejection, duplicate requests, duplicate approval retries and concurrent duplicate approvals.
+- [ ] Add concurrent approve-versus-reject race tests and policy-revalidation tests.
 - [ ] Only then expose a controlled mutation tool to Spring AI or MCP.
 
 ~~~mermaid

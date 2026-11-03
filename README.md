@@ -129,42 +129,42 @@ execution ownership and retention/deletion policy remain separate work.
 
 ```mermaid
 flowchart TD
-    Client[HTTP client / frontend] --> API[Spring MVC REST API]
+  Client[HTTP client / frontend] --> API[Spring MVC REST API]
 
-    API --> Domain[Order, shipment, payment and refund services]
-    Domain --> JPA[Spring Data JPA]
-    JPA --> DB[(PostgreSQL)]
+  API --> Domain[Order, shipment, payment and refund services]
+  Domain --> JPA[Spring Data JPA]
+  JPA --> DB[(PostgreSQL)]
 
-    API --> ConversationAPI[Conversation lifecycle API]
-    ConversationAPI --> ConversationService[ConversationService]
-    ConversationService --> ConversationRepo[ConversationRepository]
-    ConversationRepo --> DB
+  API --> ConversationAPI[Conversation lifecycle API]
+  ConversationAPI --> ConversationService[ConversationService]
+  ConversationService --> ConversationRepo[ConversationRepository]
+  ConversationRepo --> DB
 
-    API --> Agent[Order-support agent]
-    Agent --> ChatClient[Spring AI ChatClient]
-    ChatClient <--> Adapter[Provider-specific Spring AI adapter]
-    Adapter <--> LLM[Configured LLM endpoint]
-    ChatClient --> Memory[Bounded MessageWindowChatMemory]
-    Memory --> MemoryDB[(SPRING_AI_CHAT_MEMORY in PostgreSQL)]
-    ChatClient --> Tools[Read-only tools]
-    ChatClient --> KnowledgeTool[search_knowledge_base]
+  API --> Agent[Order-support agent]
+  Agent --> ChatClient[Spring AI ChatClient]
+  ChatClient <--> Adapter[Provider-specific Spring AI adapter]
+  Adapter <--> LLM[Configured LLM endpoint]
+  ChatClient --> Memory[Bounded MessageWindowChatMemory]
+  Memory --> MemoryDB[(SPRING_AI_CHAT_MEMORY in PostgreSQL)]
+  ChatClient --> Tools[Read-only tools]
+  ChatClient --> KnowledgeTool[search_knowledge_base]
 
-    KnowledgeTool --> Retrieval[Knowledge retrieval]
-    Retrieval --> VectorStore[pgvector vector store]
-    Corpus[Versioned Markdown corpus] --> Ingestion[Knowledge ingestion]
-    Ingestion --> VectorStore
-    Embeddings[OpenAI-compatible embedding endpoint] <--> Ingestion
-    Embeddings <--> Retrieval
+  KnowledgeTool --> Retrieval[Knowledge retrieval]
+  Retrieval --> VectorStore[pgvector vector store]
+  Corpus[Versioned Markdown corpus] --> Ingestion[Knowledge ingestion]
+  Ingestion --> VectorStore
+  Embeddings[OpenAI-compatible embedding endpoint] <--> Ingestion
+  Embeddings <--> Retrieval
 
-    Tools --> OrderTool[lookup_order]
-    Tools --> ShipmentTool[lookup_shipment_by_order]
-    Tools --> PaymentTool[lookup_payment_by_order]
-    Tools --> RefundTool[lookup_refunds_by_order]
+  Tools --> OrderTool[lookup_order]
+  Tools --> ShipmentTool[lookup_shipment_by_order]
+  Tools --> PaymentTool[lookup_payment_by_order]
+  Tools --> RefundTool[lookup_refunds_by_order]
 
-    OrderTool --> DB
-    ShipmentTool --> DB
-    PaymentTool --> DB
-    RefundTool --> DB
+  OrderTool --> DB
+  ShipmentTool --> DB
+  PaymentTool --> DB
+  RefundTool --> DB
 ```
 
 The model chooses whether tools are needed. The application executes each selected tool and returns its result to the model. A conversation ID carries context across requests; it does not replace a fresh tool lookup for current transactional data.
@@ -318,13 +318,58 @@ All endpoints use the `/api/v1` prefix.
 | `POST` | `/orders/{orderId}/payment` | Register a captured payment |
 | `GET` | `/payments/{paymentId}` | Retrieve a payment |
 | `GET` | `/orders/{orderId}/payment` | Retrieve an order's payment |
-| `POST` | `/payments/{paymentId}/refunds` | Request a refund; requires `Idempotency-Key` |
+| `POST` | `/payments/{paymentId}/refunds` | Legacy direct submission is disabled; use the approval workflow |
+| `POST` | `/approvals/refunds` | Create a pending refund approval; requires AGENT or APPROVER and `Idempotency-Key` |
+| `GET` | `/approvals` | List pending approvals; requires APPROVER |
+| `GET` | `/approvals/{approvalId}` | Retrieve an approval owned by the caller or visible to an APPROVER |
+| `POST` | `/approvals/{approvalId}/approve` | Approve and submit a refund; requires APPROVER |
+| `POST` | `/approvals/{approvalId}/reject` | Reject a refund request; requires APPROVER |
 | `GET` | `/refunds/{refundId}` | Retrieve a refund |
 | `POST` | `/agent/chat` | Send a message and receive an answer plus `conversationId` |
 | `POST` | `/agent/conversations/{conversationId}/close` | Close a conversation and delete its stored chat memory |
 | `GET` | `/actuator/health` | Application health |
 | `GET` | `/actuator/metrics` | List available Micrometer metrics |
 | `GET` | `/actuator/metrics/{metricName}` | Inspect a specific metric |
+
+### Local refund approval workflow
+
+With the local profile, refund approval uses HTTP Basic authentication and two separate identities:
+
+- AGENT: agent / local-agent-change-me
+- APPROVER: approver / local-approver-change-me
+
+Override these local-only defaults with APPROVAL_AGENT_USERNAME, APPROVAL_AGENT_PASSWORD, APPROVAL_APPROVER_USERNAME and APPROVAL_APPROVER_PASSWORD. Do not use the defaults outside local development.
+
+An AGENT can create a pending approval. Only a different APPROVER can approve or reject it. The old direct refund POST endpoint is disabled, including for APPROVER users. Approval invokes the existing locked RefundService and rechecks the remaining refundable amount. A successful decision creates a domain refund in REQUESTED status; it does not claim that a payment provider has completed the refund.
+
+Example request:
+
+~~~bash
+PAYMENT_ID=1
+APPROVAL_IDEMPOTENCY_KEY="refund-approval-$(uuidgen)"
+
+APPROVAL_RESPONSE=$(curl -sS \
+  -u "${APPROVAL_AGENT_USERNAME:-agent}:${APPROVAL_AGENT_PASSWORD:-local-agent-change-me}" \
+  -X POST "http://127.0.0.1:8080/api/v1/approvals/refunds" \
+  -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $APPROVAL_IDEMPOTENCY_KEY" \
+  -d "$(jq -n --argjson paymentId "$PAYMENT_ID" --arg reason 'Damaged item' \
+    '{paymentId:$paymentId, amount:25.00, reason:$reason}')")
+
+printf '%s\n' "$APPROVAL_RESPONSE" | jq '.' | glow -
+APPROVAL_ID=$(printf '%s\n' "$APPROVAL_RESPONSE" | jq -r '.id')
+~~~
+
+After reviewing the amount, currency, reason and requester, an APPROVER submits the decision:
+
+~~~bash
+curl -sS \
+  -u "${APPROVAL_APPROVER_USERNAME:-approver}:${APPROVAL_APPROVER_PASSWORD:-local-approver-change-me}" \
+  -X POST "http://127.0.0.1:8080/api/v1/approvals/$APPROVAL_ID/approve" \
+  | jq '.' | glow -
+~~~
+
+For deployed profiles, configure SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_ISSUER_URI. The JWT must contain a roles claim with AGENT and/or APPROVER. Without an issuer configured outside local/test profiles, API traffic is denied except actuator health/info endpoints.
 
 ### Terminal output conventions
 
@@ -546,12 +591,13 @@ set -o pipefail
 mvn --batch-mode --no-transfer-progress clean verify 2>&1 | glow -
 ~~~
 
-The test suite includes domain and tool unit tests, API tests, conversation/memory tests, PostgreSQL/Testcontainers integration tests, model/tool orchestration tests, observability tests, and an MCP Streamable HTTP integration test. Testcontainers needs a working Docker daemon. Do not treat a successful compile as proof that database or Spring context wiring works.
+The test suite includes domain and tool unit tests, API tests, conversation/memory tests, PostgreSQL/Testcontainers integration tests, refund-approval and authorization tests, model/tool orchestration tests, observability tests, and an MCP Streamable HTTP integration test. Testcontainers needs a working Docker daemon. Do not treat a successful compile as proof that database or Spring context wiring works.
 
 ### Focused test suites
 
 ~~~bash
 bash scripts/test-agent-limits.sh
+bash scripts/test-refund-approval.sh
 mvn --batch-mode --no-transfer-progress -Dtest=McpServerHttpIntegrationTest test
 mvn --batch-mode --no-transfer-progress -Dtest=SupportPolicyMcpResourcesTest,OrderSupportMcpPromptsTest test
 ~~~
@@ -622,6 +668,7 @@ All scripts are designed to run from the repository root and work with bash. glo
 | scripts/check-local.sh | Check the toolchain; optionally check Docker/PostgreSQL, app health, or MCP reachability | Java 25, Maven, curl; jq/Docker when selected |
 | scripts/verify.sh | Run the same clean verify Maven lifecycle as CI | Java 25, Maven |
 | scripts/test-agent-limits.sh | Run focused execution limit/deadline/observability regression tests | Java 25, Maven |
+| scripts/test-refund-approval.sh | Run PostgreSQL-backed refund-approval and direct-refund authorization tests | Java 25, Maven, Docker |
 | scripts/smoke-test-mcp.sh | Exercise MCP initialize, tools, resources and prompt over HTTP | Running mcp-server profile, seeded PostgreSQL, curl, jq |
 | scripts/evaluate-agent.sh | Evaluate real model + tools against seeded order facts; optional RAG cases | Running agent and configured chat provider; curl, jq |
 
@@ -675,7 +722,8 @@ These tests cover limit configuration, the bounded tool-calling advisor, executi
 - Give the model explicit tools instead of direct access to the database.
 - Use conversation history for reference resolution; use tools for current transactional facts.
 - Keep tool names and metric tags bounded; never tag metrics with order IDs, conversation IDs, or user-supplied values.
-- Prefer read-only tools; validate and authorize any future mutation tool in application code.
+- Prefer read-only agent/MCP tools; human refund decisions require an authenticated APPROVER identity and a persisted approval record.
+- Keep agent-driven mutation tools disabled until a general policy evaluator, identity/tenant ownership and mutation-specific audit guarantees are implemented.
 - Keep provider-neutral settings externalized and protocol-specific mappings in adapter profiles.
 - Test failure paths, concurrency, idempotency, conversation closure, and tool execution-not just successful HTTP requests.
 - Never log API keys, full prompts, full model responses, tracking numbers, payment data, or other transactional details unnecessarily.
@@ -692,9 +740,12 @@ Near-term next steps:
 - [x] Add a reusable read-only order investigation prompt.
 - [x] Add live MCP smoke test and local preflight/CI verification scripts.
 - [x] Cover malformed MCP tool arguments and unknown policy resource IDs in integration and smoke tests.
-- [ ] Add a durable execution/event model before implementing long-running approval flows.
-- [ ] Add explicit authenticated principal/authorization and conversation ownership checks.
-- [ ] Add policy evaluation and human approval before exposing any state-changing agent tool.
+- [x] Add the initial durable execution lifecycle/event model.
+- [x] Add a persisted four-eyes refund approval workflow and disable the legacy direct-refund bypass.
+- [x] Add authenticated AGENT/APPROVER separation for refund approvals.
+- [ ] Add authenticated conversation ownership and tenant isolation across all API and agent operations.
+- [x] Add a human approval boundary for refund submission.
+- [ ] Add a general policy evaluator and resume/revalidation semantics before exposing any state-changing agent tool.
 - [ ] Add a full-fidelity audit history separate from bounded chat memory.
 - [ ] Add retrieval/answer-grounding evaluation for RAG.
 - [ ] Add a configured remote MCP client only when there is an MCP service to connect to.

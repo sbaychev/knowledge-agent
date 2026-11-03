@@ -39,8 +39,11 @@ public class OrderSupportMcpPrompts {
         long parsedOrderId;
 
         try {
+
             parsedOrderId = Long.parseLong(orderId);
+
         } catch (NumberFormatException exception) {
+
             throw new IllegalArgumentException(
                     "orderId must be a positive numeric order ID.",
                     exception
@@ -48,6 +51,7 @@ public class OrderSupportMcpPrompts {
         }
 
         if (parsedOrderId <= 0) {
+
             throw new IllegalArgumentException(
                     "orderId must be a positive numeric order ID."
             );

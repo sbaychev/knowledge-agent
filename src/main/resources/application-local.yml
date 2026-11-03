@@ -27,6 +27,15 @@ spring:
   jpa:
     show-sql: true
 
+  security:
+    local:
+      agent:
+        username: ${APPROVAL_AGENT_USERNAME:agent}
+        password: ${APPROVAL_AGENT_PASSWORD:local-agent-change-me}
+      approver:
+        username: ${APPROVAL_APPROVER_USERNAME:approver}
+        password: ${APPROVAL_APPROVER_PASSWORD:local-approver-change-me}
+
 agent:
   memory:
     max-context-tokens: ${AGENT_MAX_CONTEXT_TOKENS:12000}

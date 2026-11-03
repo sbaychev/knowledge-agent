@@ -65,9 +65,11 @@ public class AgentChatApplicationService {
         );
 
         try {
+
             String answer = agentService.answer(
                     request.message(),
-                    conversationId.toString()
+                    conversationId.toString(),
+                    executionId
             );
 
             executionService.markSucceeded(executionId);

@@ -1,3 +1,4 @@
+
 package com.stefan.knowledgeagent.agent;
 
 import com.stefan.knowledgeagent.agent.execution.AgentExecutionService;
@@ -56,7 +57,6 @@ class AgentChatApplicationServiceTest {
 
     @BeforeEach
     void setUp() {
-
         MDC.clear();
 
         service = new AgentChatApplicationService(
@@ -84,7 +84,8 @@ class AgentChatApplicationServiceTest {
 
         when(agentService.answer(
                 "Check order 1.",
-                CONVERSATION_ID.toString()
+                CONVERSATION_ID.toString(),
+                EXECUTION_ID
         )).thenReturn("Order 1 is shipped.");
 
         AgentChatResponse response = service.chat(
@@ -99,6 +100,12 @@ class AgentChatApplicationServiceTest {
 
         assertThat(response.answer())
                 .isEqualTo("Order 1 is shipped.");
+
+        verify(agentService).answer(
+                "Check order 1.",
+                CONVERSATION_ID.toString(),
+                EXECUTION_ID
+        );
 
         verify(executionService).markSucceeded(EXECUTION_ID);
 
@@ -127,12 +134,19 @@ class AgentChatApplicationServiceTest {
 
         when(agentService.answer(
                 "Check order 1.",
-                CONVERSATION_ID.toString()
+                CONVERSATION_ID.toString(),
+                EXECUTION_ID
         )).thenThrow(originalFailure);
 
         assertThatThrownBy(() -> service.chat(
                 new AgentChatRequest("Check order 1.", null)
         )).isSameAs(originalFailure);
+
+        verify(agentService).answer(
+                "Check order 1.",
+                CONVERSATION_ID.toString(),
+                EXECUTION_ID
+        );
 
         verify(executionService).markFailed(
                 EXECUTION_ID,

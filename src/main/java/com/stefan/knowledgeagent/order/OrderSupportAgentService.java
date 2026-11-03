@@ -1,5 +1,6 @@
 package com.stefan.knowledgeagent.order;
 
+import com.stefan.knowledgeagent.agent.AgentExecutionContextHolder;
 import com.stefan.knowledgeagent.agent.AgentExecutionDeadline;
 import com.stefan.knowledgeagent.agent.BoundedToolCallingAdvisor;
 import com.stefan.knowledgeagent.observability.AgentObservability;
@@ -16,6 +17,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
+
+import java.util.UUID;
 
 @Service
 public class OrderSupportAgentService {
@@ -95,6 +98,7 @@ public class OrderSupportAgentService {
     private final AgentObservability observability;
     private final AgentExecutionDeadline executionDeadline;
     private final BoundedToolCallingAdvisor boundedToolCallingAdvisor;
+    private final AgentExecutionContextHolder agentExecutionContextHolder;
 
     /**
      * Spring constructor.
@@ -113,7 +117,8 @@ public class OrderSupportAgentService {
             PaymentLookupTool paymentLookupTool,
             RefundLookupTool refundLookupTool,
             AgentExecutionDeadline executionDeadline,
-            BoundedToolCallingAdvisor boundedToolCallingAdvisor
+            BoundedToolCallingAdvisor boundedToolCallingAdvisor,
+            AgentExecutionContextHolder agentExecutionContextHolder
     ) {
         this(
                 chatClientBuilder,
@@ -125,7 +130,8 @@ public class OrderSupportAgentService {
                 paymentLookupTool,
                 refundLookupTool,
                 executionDeadline,
-                boundedToolCallingAdvisor
+                boundedToolCallingAdvisor,
+                agentExecutionContextHolder
         );
     }
 
@@ -152,7 +158,8 @@ public class OrderSupportAgentService {
                 paymentLookupTool,
                 refundLookupTool,
                 executionDeadline,
-                boundedToolCallingAdvisor
+                boundedToolCallingAdvisor,
+                AgentExecutionContextHolder.noop()
         );
     }
 
@@ -175,7 +182,8 @@ public class OrderSupportAgentService {
                 paymentLookupTool,
                 refundLookupTool,
                 AgentExecutionDeadline.direct(),
-                (BoundedToolCallingAdvisor) null
+                (BoundedToolCallingAdvisor) null,
+                AgentExecutionContextHolder.noop()
         );
     }
 
@@ -192,7 +200,8 @@ public class OrderSupportAgentService {
             PaymentLookupTool paymentLookupTool,
             RefundLookupTool refundLookupTool,
             AgentExecutionDeadline executionDeadline,
-            BoundedToolCallingAdvisor boundedToolCallingAdvisor
+            BoundedToolCallingAdvisor boundedToolCallingAdvisor,
+            AgentExecutionContextHolder agentExecutionContextHolder
     ) {
 
         MessageChatMemoryAdvisor memoryAdvisor =
@@ -228,67 +237,81 @@ public class OrderSupportAgentService {
         this.refundLookupTool = refundLookupTool;
         this.executionDeadline = executionDeadline;
         this.boundedToolCallingAdvisor = boundedToolCallingAdvisor;
+        this.agentExecutionContextHolder = agentExecutionContextHolder;
+
     }
 
-    public String answer(String message, String conversationId) {
+    public String answer(
+            String message,
+            String conversationId
+    ) {
+
+        return answer(message, conversationId, null);
+
+    }
+
+    public String answer(
+            String message,
+            String conversationId,
+            UUID executionId
+    ) {
 
         if (!StringUtils.hasText(message)) {
 
-            throw new IllegalArgumentException(
-                    "Message must not be blank."
-            );
+            throw new IllegalArgumentException("Message must not be blank.");
         }
 
         if (!StringUtils.hasText(conversationId)) {
 
-            throw new IllegalArgumentException(
-                    "Conversation ID must not be blank."
-            );
+            throw new IllegalArgumentException("Conversation ID must not be blank.");
         }
 
         return observability.recordAgentRequest(
+
                 () -> executionDeadline.execute(() -> {
 
-                    ChatClient.ChatClientRequestSpec request =
-                            chatClient.prompt()
-                                    .system(SYSTEM_PROMPT)
-                                    .user(message);
+                    try (var ignored = agentExecutionContextHolder.bind(executionId)) {
 
-                    if (knowledgeSearchTool == null) {
+                        ChatClient.ChatClientRequestSpec request =
+                                chatClient.prompt()
+                                        .system(SYSTEM_PROMPT)
+                                        .user(message);
 
-                        request = request.tools(
-                                orderLookupTool,
-                                shipmentLookupTool,
-                                paymentLookupTool,
-                                refundLookupTool
-                        );
-                    } else {
+                        if (knowledgeSearchTool == null) {
 
-                        request = request.tools(
-                                orderLookupTool,
-                                shipmentLookupTool,
-                                paymentLookupTool,
-                                refundLookupTool,
-                                knowledgeSearchTool
-                        );
+                            request = request.tools(
+                                    orderLookupTool,
+                                    shipmentLookupTool,
+                                    paymentLookupTool,
+                                    refundLookupTool
+                            );
+
+                        } else {
+
+                            request = request.tools(
+                                    orderLookupTool,
+                                    shipmentLookupTool,
+                                    paymentLookupTool,
+                                    refundLookupTool,
+                                    knowledgeSearchTool
+                            );
+                        }
+
+                        String answer = request
+                                .advisors(advisorSpec -> advisorSpec.param(
+                                        ChatMemory.CONVERSATION_ID,
+                                        conversationId
+                                ))
+                                .call()
+                                .content();
+
+                        if (!StringUtils.hasText(answer)) {
+
+                            throw new IllegalStateException("The AI provider returned an empty answer.");
+                        }
+
+                        return answer;
                     }
-
-                    String answer = request
-                            .advisors(advisorSpec -> advisorSpec.param(
-                                    ChatMemory.CONVERSATION_ID,
-                                    conversationId
-                            ))
-                            .call()
-                            .content();
-
-                    if (!StringUtils.hasText(answer)) {
-
-                        throw new IllegalStateException(
-                                "The AI provider returned an empty answer."
-                        );
-                    }
-
-                    return answer;
                 })
         );
     }

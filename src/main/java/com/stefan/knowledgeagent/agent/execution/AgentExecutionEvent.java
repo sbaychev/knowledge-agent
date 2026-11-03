@@ -7,10 +7,8 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
-import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 import jakarta.persistence.UniqueConstraint;
-
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -28,12 +26,6 @@ import java.util.UUID;
                 @UniqueConstraint(
                         name = "uk_agent_execution_event_sequence",
                         columnNames = {"execution_id", "sequence_number"}
-                )
-        },
-        indexes = {
-                @Index(
-                        name = "idx_agent_execution_events_execution_sequence",
-                        columnList = "execution_id, sequence_number"
                 )
         }
 )

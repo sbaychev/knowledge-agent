@@ -6,7 +6,7 @@ Knowledge Agent deliberately starts as **one Spring Boot application** with expl
 
 This is a decision for this POC, not a claim that one process is always the right deployment model. Split a capability into another process only when independent scaling, ownership, deployment, failure isolation, or security boundaries justify it.
 
-The current repository implements an order-support scenario. It does not yet implement the full policy/approval workflow from the long-term roadmap. LLM-facing tools remain read-only even though the REST API has operations that can mutate order, shipment, payment, and refund state.
+The current repository implements an order-support scenario and an initial human-operated refund-approval workflow. It does not yet implement a general policy engine or model-mediated approval/resumption. LLM-facing and MCP tools remain read-only even though the REST API has operations that can mutate order, shipment, payment, and refund state.
 
 ## System context
 
@@ -97,6 +97,7 @@ A text fragment returned by the model is not a durable record of which facts wer
 | Package | Responsibility | Keep out |
 |---|---|---|
 | **api** | HTTP routes, request DTOs, validation, public response shape | Prompt construction, direct repository queries |
+| **approval** | Refund approval state machine, locked decisions, append-only approval events | Model-selected authorization, direct database access |
 | **order** | Order model, state transitions, domain invariants, persistence mapping | LLM-specific choices |
 | **shipment** | Shipment state and lifecycle rules | Model prompts |
 | **payment** | Payment/refund model, amount validation, idempotency, persistence | Direct model-generated SQL |
@@ -176,13 +177,15 @@ The MCP adapter delegates to the same tool classes used by the chat agent; it do
 
 The integration test and scripts/smoke-test-mcp.sh exercise the initialize handshake, tool discovery/invocation, resource discovery/read, resource-template discovery and prompt discovery/rendering. For the canonical protocol contract and settings, see [Spring AI MCP Server Annotations](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-annotations-server.html) and [Spring AI MCP overview](https://docs.spring.io/spring-ai/reference/api/mcp/mcp-overview.html).
 
-**Not implemented yet:** remote MCP client orchestration, authenticated multi-tenant MCP access, policy-based tool authorization, human approval/resumption, mutation tools over MCP, resource subscriptions/notifications, and a durable agent execution event log. The MCP client starter is present as an option; the dependency alone does not mean a remote MCP client is configured.
+**Not implemented yet:** remote MCP client orchestration, authenticated multi-tenant MCP access, a general policy evaluator, model-mediated approval/resumption, mutation tools over MCP, resource subscriptions/notifications, and complete model/tool-level agent execution events. The MCP client starter is present as an option; the dependency alone does not mean a remote MCP client is configured.
 
 ## Persistence model
 
 Flyway migrations in src/main/resources/db/migration own schema changes and seed records. Hibernate schema generation is validation-only.
 
 Current persistence responsibilities include:
+- refund approval requests with requester/approver subjects, immutable refund parameters, expiry, decision metadata and linked submitted refund;
+- append-only refund approval events with per-request sequence numbers, actor subjects and versioned JSONB payloads;
 - customers and orders with item details;
 - shipment lifecycle state;
 - payments and refunds, including an idempotency key for refund requests;
@@ -219,14 +222,58 @@ The current policy documents are demonstration content. Before real deployment, 
 
 Correlation IDs help connect log events; they are not a distributed trace. OpenTelemetry propagation/exporter deployment is a separate configuration concern and should be tested with the actual collector/exporter when tracing is enabled.
 
+## Human refund-approval flow
+
+The first approval workflow is deliberately a human-facing application capability. It is not exposed as an LLM or MCP mutation tool.
+
+~~~mermaid
+sequenceDiagram
+    participant A as Authenticated AGENT
+    participant API as RefundApprovalController
+    participant S as RefundApprovalService
+    participant DB as PostgreSQL
+    participant H as Authenticated APPROVER
+    participant R as RefundService
+
+    A->>API: POST /approvals/refunds + Idempotency-Key
+    API->>S: requester from Authentication
+    S->>DB: Insert PENDING request + REQUESTED event
+    DB-->>S: Durable approval ID
+    S-->>A: PENDING approval
+    H->>API: POST /approvals/{id}/approve
+    API->>S: approver from Authentication
+    S->>DB: SELECT approval FOR UPDATE
+    S->>S: Reject self-approval / expire if due
+    S->>R: requestRefund(approval-derived idempotency key)
+    R->>DB: Lock payment, revalidate refundable amount and reserve
+    DB-->>S: Refund REQUESTED
+    S->>DB: SUBMITTED + APPROVED + REFUND_SUBMITTED events
+    S-->>H: SUBMITTED approval and refund ID
+~~~
+
+Important properties:
+- Requester and approver identities come from Spring Security Authentication, never from request JSON.
+- The requester cannot approve or reject their own request.
+- An approval row is pessimistically locked while a decision is committed.
+- The existing RefundService locks the payment and rechecks refundable capacity before creating the refund request. The legacy direct-refund controller route is explicitly denied even to APPROVER identities; the approval decision is the only supported submission path.
+- A stable approval-derived idempotency key prevents an approval retry from creating a second refund.
+- Approval state, approval events and refund submission share the same PostgreSQL transaction.
+- The event table rejects UPDATE and DELETE at the database boundary.
+- An approved request is reported as SUBMITTED while the domain refund remains REQUESTED. Provider completion is a separate business transition.
+
+The local profile uses HTTP Basic with separate AGENT and APPROVER accounts. The deployed profile accepts JWTs from the configured issuer and maps the roles claim to ROLE_* authorities. If no issuer is configured outside local/test profiles, API traffic is denied except actuator health/info endpoints.
+
+This slice does not yet implement a general policy evaluator, conversation ownership, tenant isolation, an expiry scheduler, provider callbacks, or an agent/MCP mutation tool.
+
 ## Current security posture and explicit gaps
 
-The implementation is a local-development POC, not a production security boundary.
+The implementation remains a POC. The refund mutation boundary now has a concrete identity and approval control, but this is not a complete production security boundary.
 
-Implemented protections include input validation at APIs, constrained read-only model tools, bounded tool output, domain validation for direct REST mutations, refund idempotency, configurable execution limits, a restrictive MCP default bind address, and validated request correlation IDs.
+Implemented protections include input validation at APIs, constrained read-only model tools, bounded tool output, domain validation for direct REST mutations, refund idempotency, disabled legacy direct refund submission, persisted refund approvals with four-eyes review, append-only approval events, configurable execution limits, a restrictive MCP default bind address, and validated request correlation IDs.
 
 Before exposing it to real users, add or verify:
-- authentication and authorization, including conversation ownership;
+- complete authentication and authorization coverage for every mutating endpoint, including conversation ownership and tenant isolation;
+- production identity-provider configuration, JWT audience validation and key rotation;
 - secrets management and TLS at the deployment boundary;
 - tenant-aware repository/service queries;
 - rate limits for public endpoints and budget/usage controls for model calls;

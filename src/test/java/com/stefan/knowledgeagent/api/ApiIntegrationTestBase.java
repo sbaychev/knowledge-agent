@@ -8,13 +8,15 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpHeaders;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
 
 import java.util.UUID;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ActiveProfiles("test")
 @AutoConfigureTestRestTemplate
 @Import(PostgresTestConfiguration.class)
-abstract class ApiIntegrationTestBase {
+public abstract class ApiIntegrationTestBase {
 
     @Autowired
     protected TestRestTemplate http;
@@ -28,12 +30,12 @@ abstract class ApiIntegrationTestBase {
 
         return jdbc.queryForObject(
                 """
-                INSERT INTO customer (
-                    external_id, name, email, status, created_at
-                )
-                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-                RETURNING id
-                """,
+                        INSERT INTO customer (
+                            external_id, name, email, status, created_at
+                        )
+                        VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        RETURNING id
+                        """,
                 Long.class,
                 "API-IT-" + unique,
                 "API Integration Test",

@@ -78,9 +78,6 @@ CREATE TABLE agent_execution_events
             REFERENCES agent_executions (id)
             ON DELETE CASCADE,
 
-    CONSTRAINT uk_agent_execution_event_sequence
-        UNIQUE (execution_id, sequence_number),
-
     CONSTRAINT chk_agent_execution_event_sequence
         CHECK (sequence_number > 0),
 
@@ -93,12 +90,12 @@ CREATE TABLE agent_execution_events
             'EXECUTION_SUCCEEDED',
             'EXECUTION_FAILED',
             'EXECUTION_TIMED_OUT',
-            'EXECUTION_REJECTED'
+            'EXECUTION_REJECTED',
+            'TOOL_CALL_STARTED',
+            'TOOL_CALL_SUCCEEDED',
+            'TOOL_CALL_FAILED'
         )),
 
     CONSTRAINT chk_agent_execution_event_payload
         CHECK (jsonb_typeof(payload_json) = 'object')
 );
-
-CREATE INDEX idx_agent_execution_events_execution_sequence
-    ON agent_execution_events (execution_id, sequence_number);

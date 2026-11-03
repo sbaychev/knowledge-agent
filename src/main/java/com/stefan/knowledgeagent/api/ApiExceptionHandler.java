@@ -3,6 +3,8 @@ package com.stefan.knowledgeagent.api;
 import com.anthropic.errors.AnthropicException;
 import com.anthropic.errors.AnthropicServiceException;
 import com.stefan.knowledgeagent.api.dto.ApiErrorResponse;
+import com.stefan.knowledgeagent.approval.exception.InvalidRefundApprovalStateException;
+import com.stefan.knowledgeagent.approval.exception.RefundApprovalSelfApprovalException;
 import com.stefan.knowledgeagent.common.exception.AgentExecutionRejectedException;
 import com.stefan.knowledgeagent.common.exception.AgentExecutionTimeoutException;
 import com.stefan.knowledgeagent.common.exception.AgentToolLimitExceededException;
@@ -24,6 +26,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -48,40 +51,6 @@ public class ApiExceptionHandler {
         return error(
                 HttpStatus.NOT_FOUND,
                 "RESOURCE_NOT_FOUND",
-                exception.getMessage(),
-                request,
-                Map.of()
-        );
-    }
-
-    @ExceptionHandler({
-            InvalidOrderStateException.class,
-            InvalidShipmentStateException.class,
-            InvalidPaymentStateException.class,
-            InvalidRefundStateException.class,
-            RefundIdempotencyConflictException.class
-    })
-    public ResponseEntity<ApiErrorResponse> handleConflict(
-            RuntimeException exception,
-            HttpServletRequest request) {
-
-        return error(
-                HttpStatus.CONFLICT,
-                "BUSINESS_CONFLICT",
-                exception.getMessage(),
-                request,
-                Map.of()
-        );
-    }
-
-    @ExceptionHandler(RefundAmountExceededException.class)
-    public ResponseEntity<ApiErrorResponse> handleRefundAmountExceeded(
-            RefundAmountExceededException exception,
-            HttpServletRequest request) {
-
-        return error(
-                HttpStatus.UNPROCESSABLE_CONTENT,
-                "REFUND_AMOUNT_EXCEEDED",
                 exception.getMessage(),
                 request,
                 Map.of()
@@ -395,6 +364,69 @@ public class ApiExceptionHandler {
                 "AGENT_TOOL_LIMIT_EXCEEDED",
                 "The agent reached its configured tool-call or iteration limit. "
                         + "Try a more specific question.",
+                request,
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiErrorResponse> handleAccessDenied(
+            AccessDeniedException exception,
+            HttpServletRequest request) {
+
+        return error(
+                HttpStatus.FORBIDDEN,
+                "ACCESS_DENIED",
+                "The authenticated identity is not allowed to perform this operation.",
+                request,
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler({
+            InvalidOrderStateException.class,
+            InvalidShipmentStateException.class,
+            InvalidPaymentStateException.class,
+            InvalidRefundStateException.class,
+            RefundIdempotencyConflictException.class,
+            InvalidRefundApprovalStateException.class
+    })
+    public ResponseEntity<ApiErrorResponse> handleConflict(
+            RuntimeException exception,
+            HttpServletRequest request) {
+
+        return error(
+                HttpStatus.CONFLICT,
+                "BUSINESS_CONFLICT",
+                exception.getMessage(),
+                request,
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(RefundApprovalSelfApprovalException.class)
+    public ResponseEntity<ApiErrorResponse> handleRefundApprovalSelfDecision(
+            RefundApprovalSelfApprovalException exception,
+            HttpServletRequest request) {
+
+        return error(
+                HttpStatus.FORBIDDEN,
+                "REFUND_APPROVAL_SELF_DECISION",
+                exception.getMessage(),
+                request,
+                Map.of()
+        );
+    }
+
+    @ExceptionHandler(RefundAmountExceededException.class)
+    public ResponseEntity<ApiErrorResponse> handleRefundAmountExceeded(
+            RefundAmountExceededException exception,
+            HttpServletRequest request) {
+
+        return error(
+                HttpStatus.UNPROCESSABLE_CONTENT,
+                "REFUND_AMOUNT_EXCEEDED",
+                exception.getMessage(),
                 request,
                 Map.of()
         );

@@ -110,9 +110,34 @@ Use a scripted/fake ChatModel for agent tests that need to control returned tool
 
 They test the Spring AI/tool orchestration contract. They do not prove that a hosted model will always choose the best tool for arbitrary natural language; that is why a separate live evaluation exists.
 
+### Refund approval workflow integration test
+
+RefundApprovalIntegrationTest uses the real PostgreSQL schema through Testcontainers. It covers:
+- an AGENT creating a PENDING approval using an Idempotency-Key;
+- exact duplicate request returning the existing approval;
+- AGENT decision attempts denied by the security boundary;
+- requester self-approval rejected by the application state machine;
+- a distinct APPROVER approving and submitting exactly one domain refund;
+- both approval and domain refund statuses, including SUBMITTED versus REQUESTED;
+- repeated and concurrent approval retries returning the same refund ID;
+- rejection without a refund record;
+- lazy expiry before approval;
+- conflicting reuse of an idempotency key;
+- database rejection of UPDATE against the append-only approval event table.
+
+RefundApprovalExpiryIntegrationTest uses a 1ms test-only TTL and verifies that reading a pending request after its deadline changes it to EXPIRED and appends the expiration event.
+
+RefundApiIntegrationTest exercises the HTTP contract and ensures the old direct-refund endpoint cannot bypass the approval aggregate: anonymous callers receive 401, AGENT callers receive 403, and APPROVER callers also receive 403 because the legacy route is explicitly disabled.
+
+All API integration tests use the test profile with test-only Basic identities:
+- AGENT: agent / agent-test-password
+- APPROVER: approver / approver-test-password
+
+These credentials must never be used outside tests.
+
 ### MCP HTTP integration test
 
-McpServerHttpIntegrationTest starts an actual random-port HTTP server and sends JSON-RPC messages through MCP Streamable HTTP. Tool implementation dependencies are mocked at this boundary, keeping the test deterministic while still exercising transport wiring and annotation discovery.
+McpServerHttpIntegrationTest starts an actual random-port HTTP server and sends JSON-RPC messages through MCP Streamable HTTP. Tool implementation dependencies are mocked at this boundary, keeping the test deterministic while still exercising transport wiring and annotation discovery. Its isolated test application explicitly permits transport requests; this test does not claim to verify production MCP authentication. Refund approval role enforcement is tested separately through the full API context.
 
 The flow is:
 
@@ -166,6 +191,7 @@ To test bounded execution and observability:
 
 ~~~bash
 bash scripts/test-agent-limits.sh
+bash scripts/test-refund-approval.sh
 ~~~
 
 To run one class with Maven:

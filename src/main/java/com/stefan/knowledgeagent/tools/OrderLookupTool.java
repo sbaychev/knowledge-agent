@@ -1,5 +1,6 @@
 package com.stefan.knowledgeagent.tools;
 
+import com.stefan.knowledgeagent.agent.AgentToolAuditRecorder;
 import com.stefan.knowledgeagent.observability.AgentObservability;
 import com.stefan.knowledgeagent.order.Order;
 import com.stefan.knowledgeagent.order.OrderRepository;
@@ -13,21 +14,42 @@ public class OrderLookupTool {
 
     private final OrderRepository orderRepository;
     private final AgentObservability observability;
+    private final AgentToolAuditRecorder auditRecorder;
 
     @Autowired
     public OrderLookupTool(
             OrderRepository orderRepository,
-            AgentObservability observability
+            AgentObservability observability,
+            AgentToolAuditRecorder auditRecorder
     ) {
-
         this.orderRepository = orderRepository;
+
         this.observability = observability != null
                 ? observability
                 : AgentObservability.noop();
+
+        this.auditRecorder = auditRecorder != null
+                ? auditRecorder
+                : AgentToolAuditRecorder.noop();
+    }
+
+    public OrderLookupTool(
+            OrderRepository orderRepository,
+            AgentObservability observability
+    ) {
+        this(
+                orderRepository,
+                observability,
+                AgentToolAuditRecorder.noop()
+        );
     }
 
     public OrderLookupTool(OrderRepository orderRepository) {
-        this(orderRepository, AgentObservability.noop());
+        this(
+                orderRepository,
+                AgentObservability.noop(),
+                AgentToolAuditRecorder.noop()
+        );
     }
 
     @Tool(
@@ -39,13 +61,18 @@ public class OrderLookupTool {
                     order. Do not invent an order ID.
                     """
     )
-    public String lookupOrder(@ToolParam(description = "The internal numeric ID of the order") long orderId) {
+    public String lookupOrder(
+            @ToolParam(description = "The internal numeric ID of the order")
+            long orderId
+    ) {
 
         return observability.recordToolCall(
                 "lookup_order",
-                () -> lookupOrderInternal(orderId)
+                () -> auditRecorder.record(
+                        "lookup_order",
+                        () -> lookupOrderInternal(orderId)
+                )
         );
-
     }
 
     private String lookupOrderInternal(long orderId) {

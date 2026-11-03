@@ -166,6 +166,69 @@ class AgentExecutionPersistenceIntegrationTest {
                 .isEqualTo(2);
     }
 
+    @Test
+    void persistsOrderedToolInvocationEvents() {
+
+        UUID conversationId = createConversation();
+
+        UUID executionId = executionService.start(
+                conversationId,
+                "integration-test-tool-audit"
+        );
+
+        UUID toolCallId = UUID.randomUUID();
+
+        executionService.recordToolCallStarted(
+                executionId,
+                toolCallId,
+                "lookup_order"
+        );
+
+        executionService.recordToolCallSucceeded(
+                executionId,
+                toolCallId,
+                "lookup_order",
+                18L
+        );
+
+        executionService.markSucceeded(executionId);
+
+        List<AgentExecutionEvent> events = eventRepository
+                .findByExecutionIdOrderBySequenceNumberAsc(executionId);
+
+        assertThat(events)
+                .extracting(AgentExecutionEvent::getSequenceNumber)
+                .containsExactly(1, 2, 3, 4);
+
+        assertThat(events)
+                .extracting(AgentExecutionEvent::getEventType)
+                .containsExactly(
+                        AgentExecutionEventType.EXECUTION_STARTED,
+                        AgentExecutionEventType.TOOL_CALL_STARTED,
+                        AgentExecutionEventType.TOOL_CALL_SUCCEEDED,
+                        AgentExecutionEventType.EXECUTION_SUCCEEDED
+                );
+
+        AgentExecutionEvent started = events.get(1);
+        AgentExecutionEvent completed = events.get(2);
+
+        assertThat(started.getPayload())
+                .containsEntry("toolCallId", toolCallId.toString())
+                .containsEntry("toolName", "lookup_order")
+                .doesNotContainKeys("arguments", "result", "output");
+
+        assertThat(completed.getPayload())
+                .containsEntry("toolCallId", toolCallId.toString())
+                .containsEntry("toolName", "lookup_order")
+                .doesNotContainKeys("arguments", "result", "output");
+
+        Object durationMs = completed.getPayload().get("durationMs");
+
+        assertThat(durationMs).isInstanceOf(Number.class);
+
+        assertThat(((Number) durationMs).longValue()).isEqualTo(18L);
+    }
+
     private UUID createConversation() {
 
         UUID conversationId = UUID.randomUUID();
